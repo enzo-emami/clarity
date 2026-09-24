@@ -521,7 +521,7 @@ function AppContent() {
           <div className="clarity-heading">
             <span>Clarity</span><strong>{clarityScore}%</strong>
           </div>
-          <div className="meter"><i style={{ width: `${clarityScore}%` }} /></i></div>
+          <div className="meter"><i style={{ width: `${clarityScore}%` }} /></div>
           <p>{data.cards.filter((c) => c.status === 'resolved').length} resolved · {data.cards.filter((c) => c.kind === 'question' && c.status === 'open').length} open questions</p>
         </div>
 
