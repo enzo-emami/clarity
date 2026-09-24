@@ -31,6 +31,7 @@ export type Connection = {
 }
 
 export type BoardData = {
+  contentVersion?: number
   cards: ClarityCard[]
   connections: Connection[]
   topics: Topic[]

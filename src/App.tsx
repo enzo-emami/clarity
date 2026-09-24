@@ -16,6 +16,7 @@ import {
   X,
 } from 'lucide-react'
 import { confidenceLabels, kindMeta, starterData } from './data'
+import { upgradeBoard } from './expansion'
 import type { BoardData, CardKind, ClarityCard, Confidence, Connection, Topic } from './types'
 
 const STORAGE_KEY = 'clarity-board-v1'
@@ -27,9 +28,9 @@ const uid = () => Math.random().toString(36).slice(2, 10)
 function loadBoard(): BoardData {
   try {
     const saved = localStorage.getItem(STORAGE_KEY)
-    return saved ? JSON.parse(saved) : starterData
+    return upgradeBoard(saved ? JSON.parse(saved) : starterData)
   } catch {
-    return starterData
+    return upgradeBoard(starterData)
   }
 }
 
@@ -46,7 +47,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
-  const dragging = useRef<{ id: string; dx: number; dy: number } | null>(null)
+  const dragging = useRef<{ id: string; dx: number; dy: number; lastX: number; lastY: number; time: number; vx: number; vy: number } | null>(null)
   const panning = useRef<{ sx: number; sy: number; cx: number; cy: number } | null>(null)
   const dataRef = useRef(data)
   dataRef.current = data
@@ -84,51 +85,9 @@ function App() {
     const tick = () => {
       if (!running) return
       const current = dataRef.current
-      if (current.cards.length > 1) {
+      if (current.cards.some((card) => card.vx || card.vy)) {
         let moving = false
         const cards = current.cards.map((card) => ({ ...card }))
-        const byId = new Map(cards.map((card) => [card.id, card]))
-
-        for (let i = 0; i < cards.length; i++) {
-          for (let j = i + 1; j < cards.length; j++) {
-            const a = cards[i]
-            const b = cards[j]
-            let dx = b.x - a.x
-            let dy = b.y - a.y
-            const dist = Math.max(40, Math.hypot(dx, dy))
-            const force = Math.min(0.8, 18000 / (dist * dist))
-            dx /= dist
-            dy /= dist
-            if (dragging.current?.id !== a.id) {
-              a.vx -= dx * force
-              a.vy -= dy * force
-            }
-            if (dragging.current?.id !== b.id) {
-              b.vx += dx * force
-              b.vy += dy * force
-            }
-          }
-        }
-
-        current.connections.forEach((edge) => {
-          const a = byId.get(edge.from)
-          const b = byId.get(edge.to)
-          if (!a || !b) return
-          const dx = b.x - a.x
-          const dy = b.y - a.y
-          const dist = Math.max(1, Math.hypot(dx, dy))
-          const spring = (dist - 330) * 0.0018
-          const fx = (dx / dist) * spring
-          const fy = (dy / dist) * spring
-          if (dragging.current?.id !== a.id) {
-            a.vx += fx
-            a.vy += fy
-          }
-          if (dragging.current?.id !== b.id) {
-            b.vx -= fx
-            b.vy -= fy
-          }
-        })
 
         cards.forEach((card) => {
           if (dragging.current?.id === card.id) {
@@ -136,11 +95,12 @@ function App() {
             card.vy = 0
             return
           }
-          card.vx = (card.vx - card.x * 0.00002) * 0.91
-          card.vy = (card.vy - card.y * 0.00002) * 0.91
+          card.vx *= 0.65
+          card.vy *= 0.65
+          if (Math.hypot(card.vx, card.vy) < 0.01) { card.vx = 0; card.vy = 0 }
           card.x += card.vx
           card.y += card.vy
-          if (Math.abs(card.vx) + Math.abs(card.vy) > 0.015) moving = true
+          moving = true
         })
         if (moving) setData((old) => ({ ...old, cards }))
       }
@@ -156,8 +116,14 @@ function App() {
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
       if (dragging.current) {
-        const worldX = (event.clientX - camera.x) / camera.zoom
-        const worldY = (event.clientY - camera.y) / camera.zoom
+        const rect = viewportRef.current!.getBoundingClientRect()
+        const worldX = (event.clientX - rect.left - camera.x) / camera.zoom
+        const worldY = (event.clientY - rect.top - camera.y) / camera.zoom
+        const drag = dragging.current
+        const elapsed = Math.max(1, performance.now() - drag.time)
+        drag.vx = (event.clientX - drag.lastX) / elapsed
+        drag.vy = (event.clientY - drag.lastY) / elapsed
+        drag.lastX = event.clientX; drag.lastY = event.clientY; drag.time = performance.now()
         const { id, dx, dy } = dragging.current
         setData((old) => ({
           ...old,
@@ -166,22 +132,32 @@ function App() {
           ),
         }))
       } else if (panning.current) {
+        const pan = panning.current
         setCamera((old) => ({
           ...old,
-          x: panning.current!.cx + event.clientX - panning.current!.sx,
-          y: panning.current!.cy + event.clientY - panning.current!.sy,
+          x: pan.cx + event.clientX - pan.sx,
+          y: pan.cy + event.clientY - pan.sy,
         }))
       }
     }
     const onUp = () => {
+      const drag = dragging.current
+      if (drag) {
+        const fresh = performance.now() - drag.time < 90
+        const speed = Math.hypot(drag.vx, drag.vy)
+        const scale = fresh ? Math.min(1, 0.8 / Math.max(speed, 0.001)) / camera.zoom : 0
+        setData((old) => ({ ...old, cards: old.cards.map((card) => card.id === drag.id ? { ...card, vx: drag.vx * scale, vy: drag.vy * scale } : card) }))
+      }
       dragging.current = null
       panning.current = null
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
     return () => {
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
     }
   }, [camera.x, camera.y, camera.zoom])
 
@@ -259,20 +235,24 @@ function App() {
   }
 
   const fitView = useCallback(() => {
-    if (!visibleCards.length) return
-    const minX = Math.min(...visibleCards.map((c) => c.x))
-    const maxX = Math.max(...visibleCards.map((c) => c.x + CARD_W))
-    const minY = Math.min(...visibleCards.map((c) => c.y))
-    const maxY = Math.max(...visibleCards.map((c) => c.y + CARD_H))
+    const cards = dataRef.current.cards.filter((card) => (topicId === 'all' || card.topicId === topicId) && `${card.title} ${card.body}`.toLowerCase().includes(query.toLowerCase().trim()))
+    if (!cards.length || !viewportRef.current) return
+    const rect = viewportRef.current.getBoundingClientRect()
+    const minX = Math.min(...cards.map((c) => c.x))
+    const maxX = Math.max(...cards.map((c) => c.x + CARD_W))
+    const minY = Math.min(...cards.map((c) => c.y))
+    const maxY = Math.max(...cards.map((c) => c.y + CARD_H))
     const width = maxX - minX + 180
     const height = maxY - minY + 180
-    const zoom = Math.min(1.15, Math.max(0.38, Math.min(innerWidth / width, innerHeight / height)))
+    const zoom = Math.min(1.15, Math.max(0.06, Math.min(rect.width / width, (rect.height - 120) / height)))
     setCamera({
       zoom,
-      x: innerWidth / 2 - ((minX + maxX) / 2) * zoom,
-      y: innerHeight / 2 - ((minY + maxY) / 2) * zoom,
+      x: rect.width / 2 - ((minX + maxX) / 2) * zoom,
+      y: rect.height / 2 - ((minY + maxY) / 2) * zoom,
     })
-  }, [visibleCards])
+  }, [topicId, query])
+
+  useEffect(() => { fitView() }, [fitView])
 
   const exportData = () => {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
@@ -303,10 +283,13 @@ function App() {
   const onWheel = (event: React.WheelEvent) => {
     event.preventDefault()
     const scale = Math.exp(-event.deltaY * 0.001)
-    const zoom = Math.min(1.8, Math.max(0.32, camera.zoom * scale))
-    const wx = (event.clientX - camera.x) / camera.zoom
-    const wy = (event.clientY - camera.y) / camera.zoom
-    setCamera({ x: event.clientX - wx * zoom, y: event.clientY - wy * zoom, zoom })
+    const zoom = Math.min(1.8, Math.max(0.06, camera.zoom * scale))
+    const rect = viewportRef.current!.getBoundingClientRect()
+    const px = event.clientX - rect.left
+    const py = event.clientY - rect.top
+    const wx = (px - camera.x) / camera.zoom
+    const wy = (py - camera.y) / camera.zoom
+    setCamera({ x: px - wx * zoom, y: py - wy * zoom, zoom })
   }
 
   return (
@@ -381,6 +364,11 @@ function App() {
         </div>
 
         <div className="world" style={{ transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.zoom})` }}>
+          {data.topics.filter((topic) => topic.id !== 'all' && (topicId === 'all' || topicId === topic.id)).map((topic) => {
+            const cards = visibleCards.filter((card) => card.topicId === topic.id)
+            if (!cards.length) return null
+            return <div key={topic.id} className="space-heading" style={{ position: 'absolute', left: Math.min(...cards.map((card) => card.x)), top: Math.min(...cards.map((card) => card.y)) - 55, color: topic.color, fontSize: 24, fontWeight: 700, pointerEvents: 'none' }}>{topic.name}</div>
+          })}
           <svg className="edges" width="1" height="1" overflow="visible">
             {visibleEdges.map((edge) => {
               const from = data.cards.find((c) => c.id === edge.from)!
@@ -412,9 +400,10 @@ function App() {
                   event.stopPropagation()
                   chooseCard(card.id)
                   if (linkStart) return
-                  const worldX = (event.clientX - camera.x) / camera.zoom
-                  const worldY = (event.clientY - camera.y) / camera.zoom
-                  dragging.current = { id: card.id, dx: worldX - card.x, dy: worldY - card.y }
+                  const rect = viewportRef.current!.getBoundingClientRect()
+                  const worldX = (event.clientX - rect.left - camera.x) / camera.zoom
+                  const worldY = (event.clientY - rect.top - camera.y) / camera.zoom
+                  dragging.current = { id: card.id, dx: worldX - card.x, dy: worldY - card.y, lastX: event.clientX, lastY: event.clientY, time: performance.now(), vx: 0, vy: 0 }
                 }}
               >
                 <div className="card-topline">
@@ -448,7 +437,7 @@ function App() {
           <button className="active"><MousePointer2 size={17} /></button>
           <button onClick={startLink} className={linkStart ? 'active-link' : ''}><Link2 size={17} /></button>
           <span />
-          <button onClick={fitView}><Focus size={17} /></button>
+          <button onClick={fitView} aria-label="Fit map"><Focus size={17} /></button>
           <span className="zoom-label">{Math.round(camera.zoom * 100)}%</span>
         </div>
 
