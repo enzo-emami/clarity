@@ -8,11 +8,11 @@ const root = resolve('dist')
 let html = await readFile(resolve(root, 'index.html'), 'utf8')
 for (const match of [...html.matchAll(/<script\b[^>]*src="([^"]+)"[^>]*><\/script>/g)]) {
   const script = await readFile(resolve(root, match[1].replace(/^\//, '')), 'utf8')
-  html = html.replace(match[0], `<script type="module">${script.replace(/<\/script/gi, '<\\/script')}</script>`)
+  html = html.replace(match[0], () => `<script type="module">${script.replace(/<\/script/gi, '<\\/script')}</script>`)
 }
 for (const match of [...html.matchAll(/<link\b[^>]*href="([^"]+\.css)"[^>]*>/g)]) {
   const css = await readFile(resolve(root, match[1].replace(/^\//, '')), 'utf8')
-  html = html.replace(match[0], `<style>${css}</style>`)
+  html = html.replace(match[0], () => `<style>${css}</style>`)
 }
 const salt = randomBytes(16), iv = randomBytes(12)
 const key = pbkdf2Sync(password, salt, 600000, 32, 'sha256')
