@@ -29,9 +29,6 @@ const CARD_H = 144
 
 const uid = () => Math.random().toString(36).slice(2, 10)
 
-// We wrap the App in a provider in main.tsx or here.
-// For simplicity in this single-file edit, I'll create a wrapper.
-
 function AppContent() {
   const data = useQuery(api.board.getBoardData);
   const updateCardMutation = useMutation(api.board.updateCard);
@@ -56,7 +53,6 @@ function AppContent() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [toast, setToast] = useState<string | null>(null)
 
-  // First-time onboarding tutorial state
   const [inTutorial, setInTutorial] = useState(() => !localStorage.getItem(TUTORIAL_KEY))
 
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -65,15 +61,12 @@ function AppContent() {
   const dragging = useRef<{ id: string; dx: number; dy: number; lastX: number; lastY: number; time: number; vx: number; vy: number } | null>(null)
   const panning = useRef<{ sx: number; sy: number; cx: number; cy: number } | null>(null)
 
-  // Use a ref for data to avoid closure staleness in the physics loop,
-  // though since it's now from Convex, we use the query result.
   const dataRef = useRef(data);
   useEffect(() => { dataRef.current = data; }, [data]);
 
   const cameraRef = useRef(camera)
   cameraRef.current = camera
 
-  // Loading state for Convex
   if (data === undefined) {
     return (
       <div className="app-shell loading">
@@ -85,7 +78,6 @@ function AppContent() {
     );
   }
 
-  // Handle empty database (First load)
   useEffect(() => {
     if (data.cards.length === 0 && data.topics.length === 0) {
       seedBoardMutation({ data: starterData });
@@ -151,9 +143,7 @@ function AppContent() {
       const current = dataRef.current
       if (!current) return;
       if (current.cards.some((card) => card.vx || card.vy)) {
-        let moving = false;
         const cards = current.cards.map((card) => ({ ...card }))
-
         cards.forEach((card) => {
           if (dragging.current?.id === card.id) {
             card.vx = 0
@@ -165,14 +155,7 @@ function AppContent() {
           if (Math.hypot(card.vx, card.vy) < 0.01) { card.vx = 0; card.vy = 0 }
           card.x += card.vx
           card.y += card.vy
-          moving = true
         })
-        if (moving) {
-          // To avoid infinite loop and heavy network traffic,
-          // we only sync physics to the server periodically or on stop.
-          // For this implementation, we'll keep the local physics smooth
-          // and sync the final position on pointerUp.
-        }
       }
       frame = requestAnimationFrame(tick)
     }
@@ -205,7 +188,6 @@ function AppContent() {
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
       const cam = cameraRef.current
-
       if (viewportRef.current) {
         const rect = viewportRef.current.getBoundingClientRect()
         setMouseWorld({
@@ -213,20 +195,17 @@ function AppContent() {
           y: (event.clientY - rect.top - cam.y) / cam.zoom,
         })
       }
-
       if (dragging.current) {
         if (!viewportRef.current) return
         const rect = viewportRef.current.getBoundingClientRect()
         const worldX = (event.clientX - rect.left - cam.x) / cam.zoom
         const worldY = (event.clientY - rect.top - cam.y) / cam.zoom
-
         if (cardClickRef.current) {
           const dist = Math.hypot(event.clientX - cardClickRef.current.startX, event.clientY - cardClickRef.current.startY)
           if (dist > 5) {
             cardClickRef.current.moved = true
           }
         }
-
         const drag = dragging.current
         const elapsed = Math.max(1, performance.now() - drag.time)
         drag.vx = (event.clientX - drag.lastX) / elapsed
@@ -235,10 +214,6 @@ function AppContent() {
         drag.lastY = event.clientY
         drag.time = performance.now()
         const { id, dx, dy } = dragging.current
-
-        // Optimistic local update for smooth dragging
-        // In a real app we'd use a local state for the dragging card
-        // but for this conversion we'll trigger the mutation
         updateCardMutation({ id, updates: { x: worldX - dx, y: worldY - dy, vx: 0, vy: 0 } });
       } else if (panning.current) {
         const pan = panning.current
@@ -249,7 +224,6 @@ function AppContent() {
         }))
       }
     }
-
     const onUp = () => {
       const drag = dragging.current
       const cam = cameraRef.current
@@ -262,7 +236,6 @@ function AppContent() {
           updates: { vx: drag.vx * scale, vy: drag.vy * scale }
         });
       }
-
       if (cardClickRef.current) {
         if (!cardClickRef.current.moved) {
           const targetId = cardClickRef.current.id
@@ -272,11 +245,9 @@ function AppContent() {
         }
         cardClickRef.current = null
       }
-
       dragging.current = null
       panning.current = null
     }
-
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
     window.addEventListener('pointercancel', onUp)
@@ -301,7 +272,6 @@ function AppContent() {
     const cam = cameraRef.current
     const targetX = posX !== undefined ? posX : (innerWidth / 2 - cam.x) / cam.zoom - CARD_W / 2 + (Math.random() - 0.5) * 80
     const targetY = posY !== undefined ? posY : (innerHeight / 2 - cam.y) / cam.zoom - CARD_H / 2 + (Math.random() - 0.5) * 80
-
     const next: ClarityCard = {
       id,
       title: kind === 'question' ? 'A question worth exploring' : kind === 'meaning' ? 'What might this mean?' : 'Untitled thought',
@@ -361,8 +331,6 @@ function AppContent() {
       x: worldX,
       y: worldY,
     }
-    // Note: we would need a mutation for topics, but for now we use the seed logic
-    // or we can add a separate mutation in Convex.
     notify('New space created (TBD sync)')
     setCanvasMenu(null)
   }
@@ -374,8 +342,6 @@ function AppContent() {
 
   const deleteCard = () => {
     if (!selectedId) return
-    // For now we use removeConnection and just mark the card as deleted
-    // or call a specific delete mutation.
     notify('Card removal sync pending')
     setSelectedId(null)
   }
@@ -395,7 +361,6 @@ function AppContent() {
   }
 
   const disconnectCards = (fromId: string, toId: string) => {
-    // Logic to find edge and remove it
     notify('Connection removed sync pending')
   }
 
@@ -563,9 +528,9 @@ function AppContent() {
         <div className="privacy-note">
           <span>Shared Workspace</span>
           <p>This map is synced in real-time. Changes are seen by all users.</p>
-          <div>
+          <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
             <button onClick={exportData} title="Export board to JSON file"><Download size={14} /> Export</button>
-            <label title="Import board from JSON file"><Upload size={14} /> Import<input type="file" accept=".json" onChange={(e) => e.target.files?.[0] && importData(e.target.files[0])} /></label>
+            <label title="Import board from JSON file"><Upload size={14} /> Import<input type="file" accept=".json" onChange={(e) => e.target.files?.[0] && importData(e.target.files[0])} style={{ display: 'none' }} /></label>
           </div>
         </div>
       </aside>
@@ -683,8 +648,6 @@ function AppContent() {
                     onClick={(e) => {
                       e.stopPropagation()
                       if (linkStart) {
-                        // Sync change to server
-                        // Need a mutation for this
                         notify(`Assigned card to "${topic.name}" (Sync pending)`)
                         setLinkStart(null)
                         setMouseWorld(null)
@@ -956,7 +919,6 @@ function AppContent() {
         <NewTopic
           onClose={() => setTopicsOpen(false)}
           onAdd={(topic) => {
-            // Sync pending
             setTopicId(topic.id)
             setTopicsOpen(false)
           }}
