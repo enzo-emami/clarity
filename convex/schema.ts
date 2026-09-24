@@ -6,15 +6,32 @@ export default defineSchema({
     id: v.string(),
     title: v.string(),
     body: v.string(),
-    kind: v.string(),
-    confidence: v.string(),
+    kind: v.union(
+      v.literal("question"),
+      v.literal("knowledge"),
+      v.literal("meaning")
+    ),
+    confidence: v.union(
+      v.literal("first-hand"),
+      v.literal("shared-with-me"),
+      v.literal("hypothesis")
+    ),
     topicId: v.string(),
     x: v.number(),
     y: v.number(),
+<<<<<<< HEAD
     vx: v.optional(v.number()),
     vy: v.optional(v.number()),
+=======
+    vx: v.number(),
+    vy: v.number(),
+>>>>>>> cf2086c4cb5136cfcaa5828a52a2a9e88f2f3feb
     source: v.string(),
-    status: v.string(),
+    status: v.union(
+      v.literal("open"),
+      v.literal("resolved"),
+      v.literal("rejected")
+    ),
     updatedAt: v.number(),
   }).index("idx_id", ["id"]),
 
