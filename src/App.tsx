@@ -19,7 +19,7 @@ import { confidenceLabels, kindMeta, starterData } from './data'
 import { upgradeBoard } from './expansion'
 import type { BoardData, CardKind, ClarityCard, Confidence, Connection, Topic } from './types'
 
-const STORAGE_KEY = 'clarity-board-v1'
+const STORAGE_KEY = 'clarity-board-v3'
 const CARD_W = 250
 const CARD_H = 144
 
