@@ -42,12 +42,19 @@ function App() {
   const [query, setQuery] = useState('')
   const [camera, setCamera] = useState({ x: innerWidth / 2 - 86, y: innerHeight / 2, zoom: 0.48 })
   const [linkStart, setLinkStart] = useState<string | null>(null)
+  const [mouseWorld, setMouseWorld] = useState<{ x: number; y: number } | null>(null)
   const [bulkOpen, setBulkOpen] = useState(false)
   const [topicsOpen, setTopicsOpen] = useState(false)
+  const [editingTopic, setEditingTopic] = useState<Topic | null>(null)
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [tempTopicName, setTempTopicName] = useState('')
+  const [canvasMenu, setCanvasMenu] = useState<{ clientX: number; clientY: number; worldX: number; worldY: number } | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [toast, setToast] = useState<string | null>(null)
+
   const viewportRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const cardClickRef = useRef<{ id: string; startX: number; startY: number; moved: boolean } | null>(null)
   const dragging = useRef<{ id: string; dx: number; dy: number; lastX: number; lastY: number; time: number; vx: number; vy: number } | null>(null)
   const panning = useRef<{ sx: number; sy: number; cx: number; cy: number } | null>(null)
   const dataRef = useRef(data)
@@ -88,16 +95,22 @@ function App() {
         e.preventDefault()
         searchInputRef.current?.focus()
       } else if (e.key === 'Escape') {
+        if (canvasMenu) setCanvasMenu(null)
+        if (editingTopic) setEditingTopic(null)
+        if (editingTitle) setEditingTitle(false)
+        if (linkStart) {
+          setLinkStart(null)
+          setMouseWorld(null)
+        }
         if (selectedId) setSelectedId(null)
         if (selectedEdge) setSelectedEdge(null)
-        if (linkStart) setLinkStart(null)
         if (bulkOpen) setBulkOpen(false)
         if (topicsOpen) setTopicsOpen(false)
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [selectedId, selectedEdge, linkStart, bulkOpen, topicsOpen])
+  }, [canvasMenu, editingTopic, editingTitle, selectedId, selectedEdge, linkStart, bulkOpen, topicsOpen])
 
   useEffect(() => {
     let frame = 0
@@ -133,14 +146,52 @@ function App() {
     }
   }, [])
 
+  const centerCardInView = useCallback((cardId: string) => {
+    const c = dataRef.current.cards.find((item) => item.id === cardId)
+    if (!c || !viewportRef.current) return
+    const rect = viewportRef.current.getBoundingClientRect()
+    // Inspector width on desktop is min(760px, 54vw)
+    const isDesktop = window.innerWidth > 900
+    const inspectorWidth = isDesktop ? Math.min(760, rect.width * 0.54) : 0
+    const availWidth = rect.width - inspectorWidth
+    const targetCenterX = availWidth / 2
+    const targetCenterY = rect.height / 2
+    const currentZoom = cameraRef.current.zoom
+    const cardMidX = c.x + CARD_W / 2
+    const cardMidY = c.y + CARD_H / 2
+    setCamera((cam) => ({
+      ...cam,
+      x: targetCenterX - cardMidX * currentZoom,
+      y: targetCenterY - cardMidY * currentZoom,
+    }))
+  }, [])
+
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
       const cam = cameraRef.current
+
+      // Live wire tracking
+      if (viewportRef.current) {
+        const rect = viewportRef.current.getBoundingClientRect()
+        setMouseWorld({
+          x: (event.clientX - rect.left - cam.x) / cam.zoom,
+          y: (event.clientY - rect.top - cam.y) / cam.zoom,
+        })
+      }
+
       if (dragging.current) {
         if (!viewportRef.current) return
         const rect = viewportRef.current.getBoundingClientRect()
         const worldX = (event.clientX - rect.left - cam.x) / cam.zoom
         const worldY = (event.clientY - rect.top - cam.y) / cam.zoom
+
+        if (cardClickRef.current) {
+          const dist = Math.hypot(event.clientX - cardClickRef.current.startX, event.clientY - cardClickRef.current.startY)
+          if (dist > 5) {
+            cardClickRef.current.moved = true
+          }
+        }
+
         const drag = dragging.current
         const elapsed = Math.max(1, performance.now() - drag.time)
         drag.vx = (event.clientX - drag.lastX) / elapsed
@@ -179,6 +230,18 @@ function App() {
           ),
         }))
       }
+
+      if (cardClickRef.current) {
+        if (!cardClickRef.current.moved) {
+          // Pure click: open the inspector and center the card in the visible canvas!
+          const targetId = cardClickRef.current.id
+          setSelectedId(targetId)
+          setSelectedEdge(null)
+          centerCardInView(targetId)
+        }
+        cardClickRef.current = null
+      }
+
       dragging.current = null
       panning.current = null
     }
@@ -195,16 +258,19 @@ function App() {
       window.removeEventListener('mouseup', onUp)
       window.removeEventListener('blur', onUp)
     }
-  }, [])
+  }, [centerCardInView])
 
   const notify = (message: string) => {
     setToast(message)
     window.setTimeout(() => setToast(null), 2200)
   }
 
-  const addCard = (kind: CardKind = 'knowledge') => {
+  const addCardAt = (kind: CardKind = 'knowledge', posX?: number, posY?: number) => {
     const id = uid()
     const cam = cameraRef.current
+    const targetX = posX !== undefined ? posX : (innerWidth / 2 - cam.x) / cam.zoom - CARD_W / 2 + (Math.random() - 0.5) * 80
+    const targetY = posY !== undefined ? posY : (innerHeight / 2 - cam.y) / cam.zoom - CARD_H / 2 + (Math.random() - 0.5) * 80
+
     const next: ClarityCard = {
       id,
       title: kind === 'question' ? 'A question worth exploring' : kind === 'meaning' ? 'What might this mean?' : 'Untitled thought',
@@ -214,8 +280,8 @@ function App() {
       confidence: kind === 'meaning' ? 'hypothesis' : 'first-hand',
       status: 'open',
       topicId: topicId === 'all' ? 'story' : topicId,
-      x: (innerWidth / 2 - cam.x) / cam.zoom - CARD_W / 2 + (Math.random() - 0.5) * 80,
-      y: (innerHeight / 2 - cam.y) / cam.zoom - CARD_H / 2 + (Math.random() - 0.5) * 80,
+      x: targetX,
+      y: targetY,
       vx: 0,
       vy: 0,
       updatedAt: Date.now(),
@@ -223,19 +289,8 @@ function App() {
     setData((old) => ({ ...old, cards: [...old.cards, next] }))
     setSelectedId(id)
     setSelectedEdge(null)
-  }
-
-  const chooseCard = (id: string) => {
-    if (linkStart) {
-      if (linkStart !== id && !data.connections.some((e) => (e.from === linkStart && e.to === id) || (e.from === id && e.to === linkStart))) {
-        setData((old) => ({ ...old, connections: [...old.connections, { id: uid(), from: linkStart, to: id }] }))
-        notify('Connection made')
-      }
-      setLinkStart(null)
-      return
-    }
-    setSelectedId(id)
-    setSelectedEdge(null)
+    setCanvasMenu(null)
+    setTimeout(() => centerCardInView(id), 50)
   }
 
   const updateCard = (patch: Partial<ClarityCard>) => {
@@ -261,7 +316,7 @@ function App() {
     if (!selectedId) return notify('Choose a card first')
     setLinkStart(selectedId)
     setSelectedId(null)
-    notify('Now click a card to connect')
+    notify('Wire mode: click another card to connect')
   }
 
   const removeEdge = () => {
@@ -279,6 +334,39 @@ function App() {
       ),
     }))
     notify('Connection removed')
+  }
+
+  const saveTopicTitle = () => {
+    const trimmed = tempTopicName.trim()
+    if (trimmed && trimmed !== activeTopic.name) {
+      setData((old) => ({
+        ...old,
+        topics: old.topics.map((t) => (t.id === activeTopic.id ? { ...t, name: trimmed } : t)),
+      }))
+      notify('Space renamed')
+    }
+    setEditingTitle(false)
+  }
+
+  const updateTopic = (targetTopicId: string, patch: { name: string; color: string }) => {
+    setData((old) => ({
+      ...old,
+      topics: old.topics.map((t) => (t.id === targetTopicId ? { ...t, ...patch } : t)),
+    }))
+    setEditingTopic(null)
+    notify('Space updated')
+  }
+
+  const deleteTopic = (targetTopicId: string) => {
+    if (targetTopicId === 'all') return
+    setData((old) => ({
+      ...old,
+      topics: old.topics.filter((t) => t.id !== targetTopicId),
+      cards: old.cards.map((c) => (c.topicId === targetTopicId ? { ...c, topicId: 'story' } : c)),
+    }))
+    if (topicId === targetTopicId) setTopicId('all')
+    setEditingTopic(null)
+    notify('Space removed')
   }
 
   const fitView = useCallback(() => {
@@ -373,7 +461,7 @@ function App() {
           <button className="ghost-button" onClick={() => setBulkOpen(true)}>
             <Upload size={16} /> Quick capture
           </button>
-          <button className="primary-button" onClick={() => addCard()}>
+          <button className="primary-button" onClick={() => addCardAt()}>
             <Plus size={17} /> New card
           </button>
           <button
@@ -394,7 +482,13 @@ function App() {
             <button
               key={topic.id}
               className={topicId === topic.id ? 'topic active' : 'topic'}
-              onClick={() => { setTopicId(topic.id) }}
+              onClick={() => setTopicId(topic.id)}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                setEditingTopic(topic)
+              }}
+              title="Click to view space • Right-click to edit name & color"
             >
               <span className="topic-dot" style={{ background: topic.color }} />
               <span>{topic.name}</span>
@@ -431,10 +525,11 @@ function App() {
         className={linkStart ? 'canvas linking' : 'canvas'}
         onWheel={onWheel}
         onPointerDown={(event) => {
+          setCanvasMenu(null)
           const target = event.target as HTMLElement
           if (
             target.closest(
-              '.map-card, button, a, input, select, textarea, .canvas-toolbar, .map-title, .modal, .inspector, .edge-popover, .link-hint, .toast, .edge',
+              '.map-card, button, a, input, select, textarea, .canvas-toolbar, .map-title, .modal, .inspector, .edge-popover, .link-hint, .toast, .edge, .canvas-context-menu',
             )
           ) {
             return
@@ -450,10 +545,51 @@ function App() {
             cy: cameraRef.current.y,
           }
         }}
+        onContextMenu={(event) => {
+          const target = event.target as HTMLElement
+          if (target.closest('.map-card, .sidebar, .topbar, .inspector, .canvas-toolbar, .modal, .canvas-context-menu')) {
+            return
+          }
+          event.preventDefault()
+          if (!viewportRef.current) return
+          const rect = viewportRef.current.getBoundingClientRect()
+          const cam = cameraRef.current
+          const worldX = (event.clientX - rect.left - cam.x) / cam.zoom
+          const worldY = (event.clientY - rect.top - cam.y) / cam.zoom
+          setCanvasMenu({
+            clientX: event.clientX,
+            clientY: event.clientY,
+            worldX,
+            worldY,
+          })
+        }}
       >
         <div className="map-title">
           <span className="topic-dot" style={{ background: activeTopic.color }} />
-          <h1>{activeTopic.name}</h1>
+          {editingTitle ? (
+            <input
+              autoFocus
+              className="topic-inline-input"
+              value={tempTopicName}
+              onChange={(e) => setTempTopicName(e.target.value)}
+              onBlur={saveTopicTitle}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') saveTopicTitle()
+                if (e.key === 'Escape') setEditingTitle(false)
+              }}
+            />
+          ) : (
+            <h1
+              className="editable-title"
+              onClick={() => {
+                setTempTopicName(activeTopic.name)
+                setEditingTitle(true)
+              }}
+              title="Click to rename space"
+            >
+              {activeTopic.name}
+            </h1>
+          )}
           <span className="card-count-badge">{visibleCards.length} cards</span>
         </div>
 
@@ -463,6 +599,7 @@ function App() {
             if (!cards.length) return null
             return <div key={topic.id} className="space-heading" style={{ position: 'absolute', left: Math.min(...cards.map((card) => card.x)), top: Math.min(...cards.map((card) => card.y)) - 55, color: topic.color, fontSize: 24, fontWeight: 700, pointerEvents: 'none' }}>{topic.name}</div>
           })}
+
           <svg className="edges" width="1" height="1" overflow="visible">
             {visibleEdges.map((edge) => {
               const from = data.cards.find((c) => c.id === edge.from)!
@@ -481,24 +618,69 @@ function App() {
                 />
               )
             })}
+
+            {/* Live Interactive Wire when drawing connection */}
+            {linkStart && mouseWorld && (() => {
+              const src = data.cards.find((c) => c.id === linkStart)
+              if (!src) return null
+              const x1 = src.x + CARD_W / 2
+              const y1 = src.y + CARD_H / 2
+              const x2 = mouseWorld.x
+              const y2 = mouseWorld.y
+              const cx = (x1 + x2) / 2
+              return (
+                <g className="live-wire-layer">
+                  <path
+                    className="edge live-wire"
+                    d={`M ${x1} ${y1} Q ${cx} ${Math.min(y1, y2) - 30} ${x2} ${y2}`}
+                  />
+                  <circle cx={x2} cy={y2} r={6} className="wire-lead-dot" />
+                </g>
+              )
+            })()}
           </svg>
+
           {visibleCards.map((card) => {
             const topic = data.topics.find((t) => t.id === card.topicId)
             const meta = kindMeta[card.kind]
+            const isLinkSource = linkStart === card.id
+            const isLinkTarget = linkStart && !isLinkSource
+
             return (
               <article
                 key={card.id}
-                className={`map-card ${card.kind} ${selectedId === card.id ? 'selected' : ''} ${linkStart === card.id ? 'link-source' : ''} ${card.status === 'rejected' ? 'rejected' : ''}`}
+                className={`map-card ${card.kind} ${selectedId === card.id ? 'selected' : ''} ${isLinkSource ? 'link-source' : ''} ${isLinkTarget ? 'wire-target' : ''} ${card.status === 'rejected' ? 'rejected' : ''}`}
                 style={{ transform: `translate(${card.x}px, ${card.y}px)`, '--kind-color': meta.color } as React.CSSProperties}
+                onDragStart={(e) => e.preventDefault()}
                 onPointerDown={(event) => {
+                  if (event.button !== 0) return // Only left-click initiates card drag/click
                   if ((event.target as HTMLElement).closest('button, a, input, select, textarea')) return
-                  chooseCard(card.id)
-                  if (linkStart) return
                   event.stopPropagation()
+
+                  if (linkStart) {
+                    if (linkStart !== card.id) {
+                      if (!data.connections.some((e) => (e.from === linkStart && e.to === card.id) || (e.from === card.id && e.to === linkStart))) {
+                        setData((old) => ({ ...old, connections: [...old.connections, { id: uid(), from: linkStart, to: card.id }] }))
+                        notify('Connected')
+                      }
+                    }
+                    setLinkStart(null)
+                    setMouseWorld(null)
+                    return
+                  }
+
                   const rect = viewportRef.current!.getBoundingClientRect()
                   const cam = cameraRef.current
                   const worldX = (event.clientX - rect.left - cam.x) / cam.zoom
                   const worldY = (event.clientY - rect.top - cam.y) / cam.zoom
+
+                  cardClickRef.current = {
+                    id: card.id,
+                    startX: event.clientX,
+                    startY: event.clientY,
+                    moved: false,
+                  }
+
                   dragging.current = {
                     id: card.id,
                     dx: worldX - card.x,
@@ -508,6 +690,31 @@ function App() {
                     time: performance.now(),
                     vx: 0,
                     vy: 0,
+                  }
+                }}
+                onContextMenu={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  if (linkStart) {
+                    if (linkStart !== card.id) {
+                      if (!data.connections.some((e) => (e.from === linkStart && e.to === card.id) || (e.from === card.id && e.to === linkStart))) {
+                        setData((old) => ({ ...old, connections: [...old.connections, { id: uid(), from: linkStart, to: card.id }] }))
+                        notify('Connected')
+                      }
+                    }
+                    setLinkStart(null)
+                    setMouseWorld(null)
+                  } else {
+                    setLinkStart(card.id)
+                    if (viewportRef.current) {
+                      const rect = viewportRef.current.getBoundingClientRect()
+                      const cam = cameraRef.current
+                      setMouseWorld({
+                        x: (event.clientX - rect.left - cam.x) / cam.zoom,
+                        y: (event.clientY - rect.top - cam.y) / cam.zoom,
+                      })
+                    }
+                    notify('Wire mode: click another card to connect')
                   }
                 }}
               >
@@ -533,7 +740,7 @@ function App() {
             <div><Sparkles size={24} /></div>
             <h2>There’s room to think here.</h2>
             <p>Add the first card, or quick-capture a messy pile of thoughts.</p>
-            <button className="primary-button" onClick={() => addCard()}><Plus size={17} /> Add a card</button>
+            <button className="primary-button" onClick={() => addCardAt()}><Plus size={17} /> Add a card</button>
           </div>
         )}
 
@@ -547,7 +754,7 @@ function App() {
           <button
             onClick={startLink}
             className={linkStart ? 'active-link' : ''}
-            title={linkStart ? 'Cancel connecting cards' : 'Connect cards'}
+            title={linkStart ? 'Cancel wire mode (Esc)' : 'Wire connection mode (or right-click any card)'}
             aria-label="Connect cards"
           >
             <Link2 size={16} />
@@ -559,6 +766,35 @@ function App() {
         </div>
       </section>
 
+      {/* Canvas Empty Area Context Menu */}
+      {canvasMenu && (
+        <div
+          className="canvas-context-menu"
+          style={{ left: canvasMenu.clientX, top: canvasMenu.clientY }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <button onClick={() => addCardAt('knowledge', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY - CARD_H / 2)}>
+            <i className="ctx-dot" style={{ background: kindMeta.knowledge.color }} />
+            Add Knowledge Card
+          </button>
+          <button onClick={() => addCardAt('question', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY - CARD_H / 2)}>
+            <i className="ctx-dot" style={{ background: kindMeta.question.color }} />
+            Add Question Card
+          </button>
+          <button onClick={() => addCardAt('meaning', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY - CARD_H / 2)}>
+            <i className="ctx-dot" style={{ background: kindMeta.meaning.color }} />
+            Add Meaning Card
+          </button>
+          <hr />
+          <button onClick={() => { setBulkOpen(true); setCanvasMenu(null) }}>
+            <Upload size={14} /> Quick capture
+          </button>
+          <button onClick={() => { fitView(); setCanvasMenu(null) }}>
+            <Focus size={14} /> Fit map in view
+          </button>
+        </div>
+      )}
+
       {selected && (
         <Inspector
           card={selected}
@@ -569,7 +805,10 @@ function App() {
           onClose={() => setSelectedId(null)}
           onDelete={deleteCard}
           onLink={startLink}
-          onSelectCard={(id) => setSelectedId(id)}
+          onSelectCard={(id) => {
+            setSelectedId(id)
+            centerCardInView(id)
+          }}
           onDisconnect={(targetId) => disconnectCards(selected.id, targetId)}
         />
       )}
@@ -593,6 +832,7 @@ function App() {
           }}
         />
       )}
+
       {topicsOpen && (
         <NewTopic
           onClose={() => setTopicsOpen(false)}
@@ -603,11 +843,22 @@ function App() {
           }}
         />
       )}
+
+      {editingTopic && (
+        <TopicEditModal
+          topic={editingTopic}
+          onClose={() => setEditingTopic(null)}
+          onSave={(patch) => updateTopic(editingTopic.id, patch)}
+          onDelete={editingTopic.id !== 'all' ? () => deleteTopic(editingTopic.id) : undefined}
+        />
+      )}
+
       {linkStart && (
         <div className="link-hint">
-          <Link2 size={15} /> Click another card to connect <button onClick={() => setLinkStart(null)}>Cancel</button>
+          <Link2 size={15} /> Click another card to connect (or right-click) <button onClick={() => { setLinkStart(null); setMouseWorld(null) }}>Cancel</button>
         </div>
       )}
+
       {toast && <div className="toast"><Check size={15} /> {toast}</div>}
     </main>
   )
@@ -788,6 +1039,70 @@ function Inspector({
   )
 }
 
+function TopicEditModal({
+  topic,
+  onClose,
+  onSave,
+  onDelete,
+}: {
+  topic: Topic
+  onClose: () => void
+  onSave: (patch: { name: string; color: string }) => void
+  onDelete?: () => void
+}) {
+  const [name, setName] = useState(topic.name)
+  const [color, setColor] = useState(topic.color)
+  const colors = ['#dd765c', '#557b72', '#8e68aa', '#d49b3b', '#4d78a4', '#b76f86', '#60865c', '#2c3834']
+
+  return (
+    <div className="modal-backdrop" onPointerDown={onClose}>
+      <section className="modal small-modal" onPointerDown={(e) => e.stopPropagation()}>
+        <button className="modal-close icon-button" onClick={onClose} aria-label="Close modal">
+          <X size={19} />
+        </button>
+        <h2>Edit space</h2>
+        <p>Change the name or accent color for this space.</p>
+        <input
+          autoFocus
+          className="topic-name-input"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Space name"
+        />
+        <div className="color-row">
+          {colors.map((item) => (
+            <button
+              key={item}
+              className={color === item ? 'color active' : 'color'}
+              style={{ background: item }}
+              onClick={() => setColor(item)}
+              aria-label="Select color"
+            />
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
+          {onDelete && (
+            <button
+              className="delete-button"
+              style={{ height: '42px', padding: '0 15px', borderRadius: '10px' }}
+              onClick={onDelete}
+            >
+              <Trash2 size={15} /> Delete
+            </button>
+          )}
+          <button
+            className="primary-button wide"
+            disabled={!name.trim()}
+            onClick={() => onSave({ name: name.trim(), color })}
+          >
+            <Check size={16} /> Save space
+          </button>
+        </div>
+      </section>
+    </div>
+  )
+}
+
 function BulkCapture({ topics, onClose, onAdd }: { topics: Topic[]; onClose: () => void; onAdd: (cards: ClarityCard[]) => void }) {
   const [text, setText] = useState('')
   const [topicId, setTopicId] = useState(topics[0]?.id ?? 'story')
@@ -831,7 +1146,7 @@ function BulkCapture({ topics, onClose, onAdd }: { topics: Topic[]; onClose: () 
 
 function NewTopic({ onClose, onAdd }: { onClose: () => void; onAdd: (topic: Topic) => void }) {
   const [name, setName] = useState('')
-  const colors = ['#dd765c', '#557b72', '#8e68aa', '#d49b3b', '#4d78a4']
+  const colors = ['#dd765c', '#557b72', '#8e68aa', '#d49b3b', '#4d78a4', '#b76f86', '#60865c', '#2c3834']
   const [color, setColor] = useState(colors[0])
   return (
     <div className="modal-backdrop" onPointerDown={onClose}>
