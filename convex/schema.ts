@@ -19,13 +19,8 @@ export default defineSchema({
     topicId: v.string(),
     x: v.number(),
     y: v.number(),
-<<<<<<< HEAD
     vx: v.optional(v.number()),
     vy: v.optional(v.number()),
-=======
-    vx: v.number(),
-    vy: v.number(),
->>>>>>> cf2086c4cb5136cfcaa5828a52a2a9e88f2f3feb
     source: v.string(),
     status: v.union(
       v.literal("open"),
@@ -48,5 +43,4 @@ export default defineSchema({
     x: v.optional(v.number()),
     y: v.optional(v.number()),
   }).index("idx_id", ["id"]),
-
 });
