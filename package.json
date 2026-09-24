@@ -11,10 +11,11 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
+    "convex": "^1.46.0",
     "lucide-react": "latest",
-    "vite": "latest",
     "react": "latest",
-    "react-dom": "latest"
+    "react-dom": "latest",
+    "vite": "latest"
   },
   "devDependencies": {
     "@eslint/js": "latest",
