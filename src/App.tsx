@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Check,
-  ChevronDown,
   Download,
   Focus,
   Link2,
   Menu,
-  MousePointer2,
   Plus,
   Search,
   Sparkles,
@@ -14,6 +12,8 @@ import {
   Unlink,
   Upload,
   X,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react'
 import { confidenceLabels, kindMeta, starterData } from './data'
 import { upgradeBoard } from './expansion'
@@ -44,13 +44,16 @@ function App() {
   const [linkStart, setLinkStart] = useState<string | null>(null)
   const [bulkOpen, setBulkOpen] = useState(false)
   const [topicsOpen, setTopicsOpen] = useState(false)
-  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(true)
   const [toast, setToast] = useState<string | null>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
   const dragging = useRef<{ id: string; dx: number; dy: number; lastX: number; lastY: number; time: number; vx: number; vy: number } | null>(null)
   const panning = useRef<{ sx: number; sy: number; cx: number; cy: number } | null>(null)
   const dataRef = useRef(data)
   dataRef.current = data
+  const cameraRef = useRef(camera)
+  cameraRef.current = camera
 
   const visibleIds = useMemo(() => {
     const q = query.toLowerCase().trim()
@@ -78,6 +81,23 @@ function App() {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
   }, [data])
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        searchInputRef.current?.focus()
+      } else if (e.key === 'Escape') {
+        if (selectedId) setSelectedId(null)
+        if (selectedEdge) setSelectedEdge(null)
+        if (linkStart) setLinkStart(null)
+        if (bulkOpen) setBulkOpen(false)
+        if (topicsOpen) setTopicsOpen(false)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [selectedId, selectedEdge, linkStart, bulkOpen, topicsOpen])
 
   useEffect(() => {
     let frame = 0
@@ -115,15 +135,19 @@ function App() {
 
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
+      const cam = cameraRef.current
       if (dragging.current) {
-        const rect = viewportRef.current!.getBoundingClientRect()
-        const worldX = (event.clientX - rect.left - camera.x) / camera.zoom
-        const worldY = (event.clientY - rect.top - camera.y) / camera.zoom
+        if (!viewportRef.current) return
+        const rect = viewportRef.current.getBoundingClientRect()
+        const worldX = (event.clientX - rect.left - cam.x) / cam.zoom
+        const worldY = (event.clientY - rect.top - cam.y) / cam.zoom
         const drag = dragging.current
         const elapsed = Math.max(1, performance.now() - drag.time)
         drag.vx = (event.clientX - drag.lastX) / elapsed
         drag.vy = (event.clientY - drag.lastY) / elapsed
-        drag.lastX = event.clientX; drag.lastY = event.clientY; drag.time = performance.now()
+        drag.lastX = event.clientX
+        drag.lastY = event.clientY
+        drag.time = performance.now()
         const { id, dx, dy } = dragging.current
         setData((old) => ({
           ...old,
@@ -140,26 +164,38 @@ function App() {
         }))
       }
     }
+
     const onUp = () => {
       const drag = dragging.current
+      const cam = cameraRef.current
       if (drag) {
         const fresh = performance.now() - drag.time < 90
         const speed = Math.hypot(drag.vx, drag.vy)
-        const scale = fresh ? Math.min(1, 0.8 / Math.max(speed, 0.001)) / camera.zoom : 0
-        setData((old) => ({ ...old, cards: old.cards.map((card) => card.id === drag.id ? { ...card, vx: drag.vx * scale, vy: drag.vy * scale } : card) }))
+        const scale = fresh ? Math.min(1, 0.8 / Math.max(speed, 0.001)) / cam.zoom : 0
+        setData((old) => ({
+          ...old,
+          cards: old.cards.map((card) =>
+            card.id === drag.id ? { ...card, vx: drag.vx * scale, vy: drag.vy * scale } : card,
+          ),
+        }))
       }
       dragging.current = null
       panning.current = null
     }
+
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
     window.addEventListener('pointercancel', onUp)
+    window.addEventListener('mouseup', onUp)
+    window.addEventListener('blur', onUp)
     return () => {
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
       window.removeEventListener('pointercancel', onUp)
+      window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('blur', onUp)
     }
-  }, [camera.x, camera.y, camera.zoom])
+  }, [])
 
   const notify = (message: string) => {
     setToast(message)
@@ -168,6 +204,7 @@ function App() {
 
   const addCard = (kind: CardKind = 'knowledge') => {
     const id = uid()
+    const cam = cameraRef.current
     const next: ClarityCard = {
       id,
       title: kind === 'question' ? 'A question worth exploring' : kind === 'meaning' ? 'What might this mean?' : 'Untitled thought',
@@ -177,8 +214,8 @@ function App() {
       confidence: kind === 'meaning' ? 'hypothesis' : 'first-hand',
       status: 'open',
       topicId: topicId === 'all' ? 'story' : topicId,
-      x: (innerWidth / 2 - camera.x) / camera.zoom - CARD_W / 2 + (Math.random() - 0.5) * 80,
-      y: (innerHeight / 2 - camera.y) / camera.zoom - CARD_H / 2 + (Math.random() - 0.5) * 80,
+      x: (innerWidth / 2 - cam.x) / cam.zoom - CARD_W / 2 + (Math.random() - 0.5) * 80,
+      y: (innerHeight / 2 - cam.y) / cam.zoom - CARD_H / 2 + (Math.random() - 0.5) * 80,
       vx: 0,
       vy: 0,
       updatedAt: Date.now(),
@@ -224,13 +261,23 @@ function App() {
     if (!selectedId) return notify('Choose a card first')
     setLinkStart(selectedId)
     setSelectedId(null)
-    notify('Now choose a card to connect')
+    notify('Now click a card to connect')
   }
 
   const removeEdge = () => {
     if (!selectedEdge) return
     setData((old) => ({ ...old, connections: old.connections.filter((edge) => edge.id !== selectedEdge) }))
     setSelectedEdge(null)
+    notify('Connection removed')
+  }
+
+  const disconnectCards = (fromId: string, toId: string) => {
+    setData((old) => ({
+      ...old,
+      connections: old.connections.filter(
+        (edge) => !((edge.from === fromId && edge.to === toId) || (edge.from === toId && edge.to === fromId)),
+      ),
+    }))
     notify('Connection removed')
   }
 
@@ -253,6 +300,18 @@ function App() {
   }, [topicId, query])
 
   useEffect(() => { fitView() }, [fitView])
+
+  const zoomIn = () => {
+    setCamera((cam) => ({ ...cam, zoom: Math.min(2.0, Number((cam.zoom * 1.25).toFixed(2))) }))
+  }
+
+  const zoomOut = () => {
+    setCamera((cam) => ({ ...cam, zoom: Math.max(0.1, Number((cam.zoom / 1.25).toFixed(2))) }))
+  }
+
+  const resetZoom = () => {
+    setCamera((cam) => ({ ...cam, zoom: 1 }))
+  }
 
   const exportData = () => {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
@@ -293,7 +352,7 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${sidebarOpen ? '' : 'sidebar-closed'}`}>
       <header className="topbar">
         <div className="brand">
           <div className="brand-mark"><Sparkles size={17} /></div>
@@ -302,29 +361,52 @@ function App() {
         </div>
         <div className="searchbox">
           <Search size={16} />
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Find a thought…" />
+          <input
+            ref={searchInputRef}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Find a thought…"
+          />
           <kbd>⌘ K</kbd>
         </div>
         <div className="top-actions">
-          <button className="ghost-button" onClick={() => setBulkOpen(true)}><Upload size={16} /> Quick capture</button>
-          <button className="primary-button" onClick={() => addCard()}><Plus size={17} /> New card</button>
-          <button className="icon-button" onClick={() => setSidebarOpen((open) => !open)} aria-label="Open spaces"><Menu size={19} /></button>
+          <button className="ghost-button" onClick={() => setBulkOpen(true)}>
+            <Upload size={16} /> Quick capture
+          </button>
+          <button className="primary-button" onClick={() => addCard()}>
+            <Plus size={17} /> New card
+          </button>
+          <button
+            className={`icon-button ${sidebarOpen ? 'active' : ''}`}
+            onClick={() => setSidebarOpen((open) => !open)}
+            title={sidebarOpen ? 'Hide spaces sidebar' : 'Show spaces sidebar'}
+            aria-label="Toggle spaces sidebar"
+          >
+            <Menu size={19} />
+          </button>
         </div>
       </header>
 
-      <aside className={sidebarOpen ? 'sidebar mobile-open' : 'sidebar'}>
+      <aside className={`sidebar ${sidebarOpen ? 'mobile-open' : ''}`}>
         <p className="eyebrow">Your map</p>
         <nav className="topics">
           {data.topics.map((topic) => (
-            <button key={topic.id} className={topicId === topic.id ? 'topic active' : 'topic'} onClick={() => { setTopicId(topic.id); setSidebarOpen(false) }}>
+            <button
+              key={topic.id}
+              className={topicId === topic.id ? 'topic active' : 'topic'}
+              onClick={() => { setTopicId(topic.id) }}
+            >
               <span className="topic-dot" style={{ background: topic.color }} />
               <span>{topic.name}</span>
-              <span className="count">{topic.id === 'all' ? data.cards.length : data.cards.filter((c) => c.topicId === topic.id).length}</span>
+              <span className="count">
+                {topic.id === 'all' ? data.cards.length : data.cards.filter((c) => c.topicId === topic.id).length}
+              </span>
             </button>
           ))}
         </nav>
-        <button className="add-topic" onClick={() => { setBulkOpen(true); setSidebarOpen(false) }}><Upload size={15} /> Quick capture</button>
-        <button className="add-topic" onClick={() => setTopicsOpen(true)}><Plus size={15} /> Add a space</button>
+        <button className="add-topic" onClick={() => setTopicsOpen(true)}>
+          <Plus size={15} /> Add a space
+        </button>
 
         <div className="clarity-card">
           <div className="clarity-heading">
@@ -338,8 +420,8 @@ function App() {
           <span>Private by default</span>
           <p>This map is saved only in this browser. Export a backup whenever you like.</p>
           <div>
-            <button onClick={exportData}><Download size={14} /> Export</button>
-            <label><Upload size={14} /> Import<input type="file" accept=".json" onChange={(e) => e.target.files?.[0] && importData(e.target.files[0])} /></label>
+            <button onClick={exportData} title="Export board to JSON file"><Download size={14} /> Export</button>
+            <label title="Import board from JSON file"><Upload size={14} /> Import<input type="file" accept=".json" onChange={(e) => e.target.files?.[0] && importData(e.target.files[0])} /></label>
           </div>
         </div>
       </aside>
@@ -349,18 +431,30 @@ function App() {
         className={linkStart ? 'canvas linking' : 'canvas'}
         onWheel={onWheel}
         onPointerDown={(event) => {
-          if (event.target === viewportRef.current || (event.target as Element).classList.contains('world')) {
-            setSelectedId(null)
-            setSelectedEdge(null)
-            panning.current = { sx: event.clientX, sy: event.clientY, cx: camera.x, cy: camera.y }
+          const target = event.target as HTMLElement
+          if (
+            target.closest(
+              '.map-card, button, a, input, select, textarea, .canvas-toolbar, .map-title, .modal, .inspector, .edge-popover, .link-hint, .toast, .edge',
+            )
+          ) {
+            return
+          }
+          event.preventDefault()
+          window.getSelection()?.removeAllRanges()
+          setSelectedId(null)
+          setSelectedEdge(null)
+          panning.current = {
+            sx: event.clientX,
+            sy: event.clientY,
+            cx: cameraRef.current.x,
+            cy: cameraRef.current.y,
           }
         }}
       >
         <div className="map-title">
           <span className="topic-dot" style={{ background: activeTopic.color }} />
           <h1>{activeTopic.name}</h1>
-          <span>{visibleCards.length} cards</span>
-          <ChevronDown size={16} />
+          <span className="card-count-badge">{visibleCards.length} cards</span>
         </div>
 
         <div className="world" style={{ transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.zoom})` }}>
@@ -397,21 +491,31 @@ function App() {
                 className={`map-card ${card.kind} ${selectedId === card.id ? 'selected' : ''} ${linkStart === card.id ? 'link-source' : ''} ${card.status === 'rejected' ? 'rejected' : ''}`}
                 style={{ transform: `translate(${card.x}px, ${card.y}px)`, '--kind-color': meta.color } as React.CSSProperties}
                 onPointerDown={(event) => {
-                  event.stopPropagation()
+                  if ((event.target as HTMLElement).closest('button, a, input, select, textarea')) return
                   chooseCard(card.id)
                   if (linkStart) return
+                  event.stopPropagation()
                   const rect = viewportRef.current!.getBoundingClientRect()
-                  const worldX = (event.clientX - rect.left - camera.x) / camera.zoom
-                  const worldY = (event.clientY - rect.top - camera.y) / camera.zoom
-                  dragging.current = { id: card.id, dx: worldX - card.x, dy: worldY - card.y, lastX: event.clientX, lastY: event.clientY, time: performance.now(), vx: 0, vy: 0 }
+                  const cam = cameraRef.current
+                  const worldX = (event.clientX - rect.left - cam.x) / cam.zoom
+                  const worldY = (event.clientY - rect.top - cam.y) / cam.zoom
+                  dragging.current = {
+                    id: card.id,
+                    dx: worldX - card.x,
+                    dy: worldY - card.y,
+                    lastX: event.clientX,
+                    lastY: event.clientY,
+                    time: performance.now(),
+                    vx: 0,
+                    vy: 0,
+                  }
                 }}
               >
                 <div className="card-topline">
                   <span className="kind-pill"><i>{meta.symbol}</i>{meta.label}</span>
-                  <span className="card-menu">•••</span>
                 </div>
                 <h2>{card.title}</h2>
-                <p>{card.body || 'Click to add what you know, wonder, or feel.'}</p>
+                <p>{card.body || 'Click to view and edit details…'}</p>
                 <footer>
                   <span className="tiny-dot" style={{ background: topic?.color }} />
                   {topic?.name}
@@ -434,11 +538,20 @@ function App() {
         )}
 
         <div className="canvas-toolbar">
-          <button className="active"><MousePointer2 size={17} /></button>
-          <button onClick={startLink} className={linkStart ? 'active-link' : ''}><Link2 size={17} /></button>
-          <span />
-          <button onClick={fitView} aria-label="Fit map"><Focus size={17} /></button>
-          <span className="zoom-label">{Math.round(camera.zoom * 100)}%</span>
+          <button onClick={zoomOut} title="Zoom out" aria-label="Zoom out"><ZoomOut size={16} /></button>
+          <button className="zoom-btn" onClick={resetZoom} title="Reset zoom to 100%">{Math.round(camera.zoom * 100)}%</button>
+          <button onClick={zoomIn} title="Zoom in" aria-label="Zoom in"><ZoomIn size={16} /></button>
+          <span className="toolbar-divider" />
+          <button onClick={fitView} title="Fit all cards in view" aria-label="Fit map"><Focus size={16} /></button>
+          <span className="toolbar-divider" />
+          <button
+            onClick={startLink}
+            className={linkStart ? 'active-link' : ''}
+            title={linkStart ? 'Cancel connecting cards' : 'Connect cards'}
+            aria-label="Connect cards"
+          >
+            <Link2 size={16} />
+          </button>
         </div>
 
         <div className="legend">
@@ -447,7 +560,18 @@ function App() {
       </section>
 
       {selected && (
-        <Inspector card={selected} topics={data.topics.filter((t) => t.id !== 'all')} connections={data.connections} cards={data.cards} onChange={updateCard} onClose={() => setSelectedId(null)} onDelete={deleteCard} onLink={startLink} />
+        <Inspector
+          card={selected}
+          topics={data.topics.filter((t) => t.id !== 'all')}
+          connections={data.connections}
+          cards={data.cards}
+          onChange={updateCard}
+          onClose={() => setSelectedId(null)}
+          onDelete={deleteCard}
+          onLink={startLink}
+          onSelectCard={(id) => setSelectedId(id)}
+          onDisconnect={(targetId) => disconnectCards(selected.id, targetId)}
+        />
       )}
 
       {selectedEdge && (
@@ -458,15 +582,49 @@ function App() {
         </div>
       )}
 
-      {bulkOpen && <BulkCapture topics={data.topics.filter((t) => t.id !== 'all')} onClose={() => setBulkOpen(false)} onAdd={(cards) => { setData((old) => ({ ...old, cards: [...old.cards, ...cards] })); setBulkOpen(false); notify(`${cards.length} cards added`) }} />}
-      {topicsOpen && <NewTopic onClose={() => setTopicsOpen(false)} onAdd={(topic) => { setData((old) => ({ ...old, topics: [...old.topics, topic] })); setTopicId(topic.id); setTopicsOpen(false) }} />}
-      {linkStart && <div className="link-hint"><Link2 size={15} /> Choose the card this connects to <button onClick={() => setLinkStart(null)}>Cancel</button></div>}
+      {bulkOpen && (
+        <BulkCapture
+          topics={data.topics.filter((t) => t.id !== 'all')}
+          onClose={() => setBulkOpen(false)}
+          onAdd={(cards) => {
+            setData((old) => ({ ...old, cards: [...old.cards, ...cards] }))
+            setBulkOpen(false)
+            notify(`${cards.length} cards added`)
+          }}
+        />
+      )}
+      {topicsOpen && (
+        <NewTopic
+          onClose={() => setTopicsOpen(false)}
+          onAdd={(topic) => {
+            setData((old) => ({ ...old, topics: [...old.topics, topic] }))
+            setTopicId(topic.id)
+            setTopicsOpen(false)
+          }}
+        />
+      )}
+      {linkStart && (
+        <div className="link-hint">
+          <Link2 size={15} /> Click another card to connect <button onClick={() => setLinkStart(null)}>Cancel</button>
+        </div>
+      )}
       {toast && <div className="toast"><Check size={15} /> {toast}</div>}
     </main>
   )
 }
 
-function Inspector({ card, topics, connections, cards, onChange, onClose, onDelete, onLink }: {
+function Inspector({
+  card,
+  topics,
+  connections,
+  cards,
+  onChange,
+  onClose,
+  onDelete,
+  onLink,
+  onSelectCard,
+  onDisconnect,
+}: {
   card: ClarityCard
   topics: Topic[]
   connections: Connection[]
@@ -475,39 +633,156 @@ function Inspector({ card, topics, connections, cards, onChange, onClose, onDele
   onClose: () => void
   onDelete: () => void
   onLink: () => void
+  onSelectCard: (id: string) => void
+  onDisconnect: (id: string) => void
 }) {
-  const linked = connections.filter((edge) => edge.from === card.id || edge.to === card.id).map((edge) => cards.find((c) => c.id === (edge.from === card.id ? edge.to : edge.from))).filter(Boolean) as ClarityCard[]
+  const linked = connections
+    .filter((edge) => edge.from === card.id || edge.to === card.id)
+    .map((edge) => cards.find((c) => c.id === (edge.from === card.id ? edge.to : edge.from)))
+    .filter(Boolean) as ClarityCard[]
+
   return (
     <aside className="inspector">
       <div className="inspector-header">
-        <span>Edit card</span>
-        <button className="icon-button" onClick={onClose}><X size={18} /></button>
+        <div className="inspector-badge">
+          <i style={{ background: kindMeta[card.kind].color }}>{kindMeta[card.kind].symbol}</i>
+          <span>{kindMeta[card.kind].label}</span>
+        </div>
+        <div className="inspector-header-actions">
+          <button className="icon-button close-btn" onClick={onClose} title="Close inspector (Esc)" aria-label="Close inspector">
+            <X size={20} />
+          </button>
+        </div>
       </div>
-      <div className="kind-switcher">
-        {(Object.keys(kindMeta) as CardKind[]).map((kind) => <button key={kind} className={card.kind === kind ? 'active' : ''} onClick={() => onChange({ kind, confidence: kind === 'meaning' ? 'hypothesis' : card.confidence })}><i style={{ background: kindMeta[kind].color }}>{kindMeta[kind].symbol}</i>{kindMeta[kind].label}</button>)}
+
+      <div className="inspector-scroll-area">
+        <div className="kind-switcher">
+          {(Object.keys(kindMeta) as CardKind[]).map((kind) => (
+            <button
+              key={kind}
+              className={card.kind === kind ? 'active' : ''}
+              onClick={() => onChange({ kind, confidence: kind === 'meaning' ? 'hypothesis' : card.confidence })}
+            >
+              <i style={{ background: kindMeta[kind].color }}>{kindMeta[kind].symbol}</i>
+              <span>{kindMeta[kind].label}</span>
+            </button>
+          ))}
+        </div>
+
+        <label className="field-label">Title</label>
+        <textarea
+          className="title-input"
+          value={card.title}
+          onChange={(e) => onChange({ title: e.target.value })}
+          placeholder="Title of this thought…"
+          rows={2}
+        />
+
+        <label className="field-label">Thought & Context</label>
+        <textarea
+          className="body-input"
+          value={card.body}
+          onChange={(e) => onChange({ body: e.target.value })}
+          placeholder="Write freely. What do you know, wonder, or feel about this?"
+          rows={7}
+        />
+
+        <div className="two-fields">
+          <label>
+            <span>Space</span>
+            <select value={card.topicId} onChange={(e) => onChange({ topicId: e.target.value })}>
+              {topics.map((topic) => (
+                <option key={topic.id} value={topic.id}>
+                  {topic.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Status</span>
+            <select
+              value={card.status}
+              onChange={(e) => onChange({ status: e.target.value as ClarityCard['status'] })}
+            >
+              <option value="open">Open</option>
+              <option value="resolved">Resolved</option>
+              <option value="rejected">Rejected</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="field-group">
+          <label className="field-label">How do we know this?</label>
+          <select
+            className="full-select"
+            value={card.confidence}
+            onChange={(e) => onChange({ confidence: e.target.value as Confidence })}
+          >
+            {(Object.keys(confidenceLabels) as Confidence[]).map((value) => (
+              <option key={value} value={value}>
+                {confidenceLabels[value]}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="field-group">
+          <label className="field-label">Source / Whose perspective?</label>
+          <input
+            className="source-input"
+            value={card.source ?? ''}
+            onChange={(e) => onChange({ source: e.target.value })}
+            placeholder="e.g. Conversation, note, reading"
+          />
+        </div>
+
+        {card.confidence === 'hypothesis' && (
+          <div className="gentle-note">
+            <strong>Interpretation / Hypothesis:</strong> This is visibly marked as an interpretation rather than an established fact. It can be freely edited, tested, or rejected.
+          </div>
+        )}
+
+        <div className="connections-list">
+          <div className="connections-header">
+            <span>Connected cards ({linked.length})</span>
+            <button className="connect-add-btn" onClick={onLink} title="Connect another card to this one">
+              <Plus size={15} /> Connect card
+            </button>
+          </div>
+          {linked.length ? (
+            <div className="connection-cards-grid">
+              {linked.map((item) => (
+                <div key={item.id} className="connection-row-card">
+                  <button
+                    className="connection-link-btn"
+                    onClick={() => onSelectCard(item.id)}
+                    title={`Open "${item.title}"`}
+                  >
+                    <i style={{ background: kindMeta[item.kind].color }}>{kindMeta[item.kind].symbol}</i>
+                    <span className="connection-title">{item.title}</span>
+                  </button>
+                  <button
+                    className="connection-unlink-btn"
+                    onClick={() => onDisconnect(item.id)}
+                    title="Disconnect this card"
+                    aria-label={`Disconnect ${item.title}`}
+                  >
+                    <X size={15} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="no-connections-text">No connections yet. Connect related questions, facts, or meanings.</p>
+          )}
+        </div>
       </div>
-      <label className="field-label">Title</label>
-      <textarea className="title-input" value={card.title} onChange={(e) => onChange({ title: e.target.value })} rows={2} />
-      <label className="field-label">What’s here?</label>
-      <textarea className="body-input" value={card.body} onChange={(e) => onChange({ body: e.target.value })} placeholder="Write freely. This can change." rows={6} />
-      <div className="two-fields">
-        <label><span>Space</span><select value={card.topicId} onChange={(e) => onChange({ topicId: e.target.value })}>{topics.map((topic) => <option key={topic.id} value={topic.id}>{topic.name}</option>)}</select></label>
-        <label><span>Status</span><select value={card.status} onChange={(e) => onChange({ status: e.target.value as ClarityCard['status'] })}><option value="open">Open</option><option value="resolved">Resolved</option><option value="rejected">Rejected</option></select></label>
-      </div>
-      <label className="field-label">How do we know this?</label>
-      <select className="full-select" value={card.confidence} onChange={(e) => onChange({ confidence: e.target.value as Confidence })}>
-        {(Object.keys(confidenceLabels) as Confidence[]).map((value) => <option key={value} value={value}>{confidenceLabels[value]}</option>)}
-      </select>
-      <label className="field-label">Source / whose perspective?</label>
-      <input className="source-input" value={card.source ?? ''} onChange={(e) => onChange({ source: e.target.value })} placeholder="e.g. Cherry, direct message" />
-      {card.confidence === 'hypothesis' && <p className="gentle-note">This is visibly marked as an interpretation—not a fact. It can be edited or rejected at any time.</p>}
-      <div className="connections-list">
-        <div><span>Connections</span><button onClick={onLink}><Plus size={14} /> Add</button></div>
-        {linked.length ? linked.map((item) => <button key={item.id} className="connection-row"><i style={{ background: kindMeta[item.kind].color }} />{item.title}</button>) : <p>No connections yet.</p>}
-      </div>
+
       <div className="inspector-footer">
-        <button className="delete-button" onClick={onDelete}><Trash2 size={15} /> Delete</button>
-        <span>Changes save automatically</span>
+        <button className="delete-button" onClick={onDelete} title="Delete this card">
+          <Trash2 size={16} /> Delete card
+        </button>
+        <span className="save-status"><Check size={13} /> Auto-saved</span>
       </div>
     </aside>
   )
@@ -539,7 +814,7 @@ function BulkCapture({ topics, onClose, onAdd }: { topics: Topic[]; onClose: () 
   return (
     <div className="modal-backdrop" onPointerDown={onClose}>
       <section className="modal bulk-modal" onPointerDown={(e) => e.stopPropagation()}>
-        <button className="modal-close icon-button" onClick={onClose}><X size={19} /></button>
+        <button className="modal-close icon-button" onClick={onClose} aria-label="Close modal"><X size={19} /></button>
         <span className="modal-icon"><Upload size={20} /></span>
         <h2>Drop the whole mess here.</h2>
         <p>One paragraph or bullet becomes one card. Organize it later—capture it now.</p>
@@ -558,7 +833,18 @@ function NewTopic({ onClose, onAdd }: { onClose: () => void; onAdd: (topic: Topi
   const [name, setName] = useState('')
   const colors = ['#dd765c', '#557b72', '#8e68aa', '#d49b3b', '#4d78a4']
   const [color, setColor] = useState(colors[0])
-  return <div className="modal-backdrop" onPointerDown={onClose}><section className="modal small-modal" onPointerDown={(e) => e.stopPropagation()}><button className="modal-close icon-button" onClick={onClose}><X size={19} /></button><h2>Make a new space</h2><p>A space can hold a topic, chapter, relationship, or ongoing story.</p><input autoFocus className="topic-name-input" placeholder="e.g. School & direction" value={name} onChange={(e) => setName(e.target.value)} /><div className="color-row">{colors.map((item) => <button key={item} className={color === item ? 'color active' : 'color'} style={{ background: item }} onClick={() => setColor(item)} />)}</div><button className="primary-button wide" disabled={!name.trim()} onClick={() => onAdd({ id: uid(), name: name.trim(), color })}><Plus size={17} /> Create space</button></section></div>
+  return (
+    <div className="modal-backdrop" onPointerDown={onClose}>
+      <section className="modal small-modal" onPointerDown={(e) => e.stopPropagation()}>
+        <button className="modal-close icon-button" onClick={onClose} aria-label="Close modal"><X size={19} /></button>
+        <h2>Make a new space</h2>
+        <p>A space can hold a topic, chapter, relationship, or ongoing story.</p>
+        <input autoFocus className="topic-name-input" placeholder="e.g. School & direction" value={name} onChange={(e) => setName(e.target.value)} />
+        <div className="color-row">{colors.map((item) => <button key={item} className={color === item ? 'color active' : 'color'} style={{ background: item }} onClick={() => setColor(item)} aria-label="Select color" />)}</div>
+        <button className="primary-button wide" disabled={!name.trim()} onClick={() => onAdd({ id: uid(), name: name.trim(), color })}><Plus size={17} /> Create space</button>
+      </section>
+    </div>
+  )
 }
 
 export default App
