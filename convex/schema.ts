@@ -11,6 +11,8 @@ export default defineSchema({
     topicId: v.string(),
     x: v.number(),
     y: v.number(),
+    vx: v.optional(v.number()),
+    vy: v.optional(v.number()),
     source: v.string(),
     status: v.string(),
     updatedAt: v.number(),
@@ -26,5 +28,8 @@ export default defineSchema({
     id: v.string(),
     name: v.string(),
     color: v.string(),
+    x: v.optional(v.number()),
+    y: v.optional(v.number()),
   }).index("idx_id", ["id"]),
+
 });

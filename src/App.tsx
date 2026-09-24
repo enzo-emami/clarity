@@ -15,12 +15,14 @@ import {
   X,
   ZoomIn,
   ZoomOut,
+  Loader2,
 } from 'lucide-react'
 import { ConvexProvider, ConvexReactClient } from "convex/react";
 import { api } from "../convex/_generated/api";
 import { useQuery, useMutation } from "convex/react";
 import { confidenceLabels, kindMeta, starterData } from './data'
 import { upgradeBoard } from './expansion'
+import { ErrorBoundary } from './ErrorBoundary'
 import type { BoardData, CardKind, ClarityCard, Confidence, Connection, Topic } from './types'
 
 const TUTORIAL_KEY = 'clarity_tutorial_done_v1'
@@ -52,6 +54,7 @@ function AppContent() {
   const [canvasMenu, setCanvasMenu] = useState<{ clientX: number; clientY: number; worldX: number; worldY: number } | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [toast, setToast] = useState<string | null>(null)
+  const [isSaving, setIsSaving] = useState(false)
 
   const [inTutorial, setInTutorial] = useState(() => !localStorage.getItem(TUTORIAL_KEY))
 
@@ -61,8 +64,7 @@ function AppContent() {
   const dragging = useRef<{ id: string; dx: number; dy: number; lastX: number; lastY: number; time: number; vx: number; vy: number } | null>(null)
   const panning = useRef<{ sx: number; sy: number; cx: number; cy: number } | null>(null)
 
-  const dataRef = useRef(data);
-  useEffect(() => { dataRef.current = data; }, [data]);
+  const dataRef = useRef<BoardData | undefined>(undefined)
 
   const cameraRef = useRef(camera)
   cameraRef.current = camera
@@ -78,38 +80,64 @@ function AppContent() {
     );
   }
 
+  const isCardKind = (value: string): value is CardKind =>
+    value === 'knowledge' ||
+    value === 'question' ||
+    value === 'meaning'
+
+  const board: BoardData = {
+    cards: data.cards.map((card) => ({
+      ...card,
+      kind: isCardKind(card.kind) ? card.kind : 'knowledge',
+      confidence: card.confidence as Confidence,
+      status: card.status as ClarityCard['status'],
+      vx: card.vx ?? 0,
+      vy: card.vy ?? 0,
+    })),
+    topics: data.topics.map((topic) => ({
+      ...topic,
+      x: topic.x ?? 0,
+      y: topic.y ?? 0,
+    })),
+    connections: data.connections,
+  }
+
   useEffect(() => {
-    if (data.cards.length === 0 && data.topics.length === 0) {
-      seedBoardMutation({ data: starterData });
+    dataRef.current = board
+  }, [board])
+
+  useEffect(() => {
+    if (board.cards.length === 0 && board.topics.length === 0) {
+      runMutation(seedBoardMutation, [{ data: starterData }]);
     }
-  }, [data, seedBoardMutation]);
+  }, [board, seedBoardMutation]);
 
   const visibleCards = useMemo(() => {
     if (inTutorial) {
-      return data.cards.filter((c) => c.id.startsWith('tutorial-'))
+      return board.cards.filter((c) => c.id.startsWith('tutorial-'))
     }
     const q = query.toLowerCase().trim()
-    return data.cards
+    return board.cards
       .filter((card) => topicId === 'all' || card.topicId === topicId)
       .filter((card) => !q || `${card.title} ${card.body}`.toLowerCase().includes(q))
-  }, [data.cards, inTutorial, query, topicId])
+  }, [board.cards, inTutorial, query, topicId])
 
   const visibleIds = useMemo(() => new Set(visibleCards.map((c) => c.id)), [visibleCards])
 
   const visibleEdges = useMemo(() => {
     if (inTutorial) return []
-    return data.connections.filter(
+    return board.connections.filter(
       (edge) => visibleIds.has(edge.from) && visibleIds.has(edge.to),
     )
-  }, [data.connections, inTutorial, visibleIds])
+  }, [board.connections, inTutorial, visibleIds])
 
-  const selected = data.cards.find((card) => card.id === selectedId) ?? null
-  const activeTopic = data.topics.find((topic) => topic.id === topicId) ?? data.topics[0]
-  const connectedCards = new Set(data.connections.flatMap((edge) => [edge.from, edge.to])).size
-  const openQuestions = data.cards.filter((card) => card.kind === 'question').length
-  const resolvedQuestions = data.cards.filter((card) => card.kind === 'question' && card.status === 'resolved').length
+  const selected = board.cards.find((card) => card.id === selectedId) ?? null
+  const activeTopic = board.topics.find((topic) => topic.id === topicId) ?? board.topics[0]
+  const connectedCards = new Set(board.connections.flatMap((edge) => [edge.from, edge.to])).size
+  const openQuestions = board.cards.filter((card) => card.kind === 'question').length
+  const resolvedQuestions = board.cards.filter((card) => card.kind === 'question' && card.status === 'resolved').length
   const clarityScore = Math.round(
-    10 + (connectedCards / Math.max(1, data.cards.length)) * 45 + (resolvedQuestions / Math.max(1, openQuestions)) * 45,
+    10 + (connectedCards / Math.max(1, board.cards.length)) * 45 + (resolvedQuestions / Math.max(1, openQuestions)) * 45,
   )
 
   useEffect(() => {
@@ -267,6 +295,18 @@ function AppContent() {
     window.setTimeout(() => setToast(null), 2400)
   }
 
+  const runMutation = async <T extends any[], R>(
+    mutationFn: (...args: T) => Promise<R>,
+    args: T
+  ) => {
+    setIsSaving(true)
+    try {
+      return await mutationFn(...args)
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
   const addCardAt = (kind: CardKind = 'knowledge', posX?: number, posY?: number) => {
     const id = uid()
     const cam = cameraRef.current
@@ -287,7 +327,7 @@ function AppContent() {
       vy: 0,
       updatedAt: Date.now(),
     }
-    upsertCardMutation({ id, card: next });
+    runMutation(upsertCardMutation, [{ id, card: next }]);
     setSelectedId(id)
     setSelectedEdge(null)
     setCanvasMenu(null)
@@ -311,7 +351,7 @@ function AppContent() {
       vy: 0,
       updatedAt: Date.now(),
     }
-    upsertCardMutation({ id, card: newCard });
+    runMutation(upsertCardMutation, [{ id, card: newCard }]);
     setSelectedId(id)
     setCanvasMenu(null)
     setTimeout(() => centerCardInView(id), 50)
@@ -337,7 +377,7 @@ function AppContent() {
 
   const updateCard = (patch: Partial<ClarityCard>) => {
     if (!selectedId) return
-    updateCardMutation({ id: selectedId, updates: { ...patch, updatedAt: Date.now() } });
+    runMutation(updateCardMutation, [{ id: selectedId, updates: { ...patch, updatedAt: Date.now() } }]);
   }
 
   const deleteCard = () => {
@@ -355,7 +395,7 @@ function AppContent() {
 
   const removeEdge = () => {
     if (!selectedEdge) return
-    removeConnectionMutation({ id: selectedEdge });
+    runMutation(removeConnectionMutation, [{ id: selectedEdge }]);
     setSelectedEdge(null)
     notify('Connection removed')
   }
@@ -432,7 +472,7 @@ function AppContent() {
       try {
         const next = JSON.parse(String(reader.result)) as BoardData
         if (!Array.isArray(next.cards) || !Array.isArray(next.connections) || !Array.isArray(next.topics)) throw new Error()
-        seedBoardMutation({ data: next });
+        runMutation(seedBoardMutation, [{ data: next }]);
         setSelectedId(null)
         notify('Map restored')
       } catch {
@@ -460,7 +500,17 @@ function AppContent() {
         <div className="brand">
           <div className="brand-mark"><Sparkles size={17} /></div>
           <span>clarity</span>
-          <span className="saved"><Check size={13} /> synced to cloud</span>
+          <span className="saved">
+            {isSaving ? (
+              <>
+                <Loader2 size={13} className="animate-spin" /> Saving...
+              </>
+            ) : (
+              <>
+                <Check size={13} /> synced to cloud
+              </>
+            )}
+          </span>
         </div>
         <div className="searchbox">
           <Search size={16} />
@@ -493,7 +543,7 @@ function AppContent() {
       <aside className={`sidebar ${sidebarOpen ? 'mobile-open' : ''}`}>
         <p className="eyebrow">Your map</p>
         <nav className="topics">
-          {data.topics.map((topic) => (
+          {board.topics.map((topic) => (
             <button
               key={topic.id}
               className={topicId === topic.id ? 'topic active' : 'topic'}
@@ -508,7 +558,7 @@ function AppContent() {
               <span className="topic-dot" style={{ background: topic.color }} />
               <span>{topic.name}</span>
               <span className="count">
-                {topic.id === 'all' ? data.cards.length : data.cards.filter((c) => c.topicId === topic.id).length}
+                {topic.id === 'all' ? board.cards.length : board.cards.filter((c) => c.topicId === topic.id).length}
               </span>
             </button>
           ))}
@@ -522,7 +572,7 @@ function AppContent() {
             <span>Clarity</span><strong>{clarityScore}%</strong>
           </div>
           <div className="meter"><i style={{ width: `${clarityScore}%` }} /></div>
-          <p>{data.cards.filter((c) => c.status === 'resolved').length} resolved · {data.cards.filter((c) => c.kind === 'question' && c.status === 'open').length} open questions</p>
+          <p>{board.cards.filter((c) => c.status === 'resolved').length} resolved · {board.cards.filter((c) => c.kind === 'question' && c.status === 'open').length} open questions</p>
         </div>
 
         <div className="privacy-note">
@@ -618,7 +668,7 @@ function AppContent() {
 
         <div className="world" style={{ transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.zoom})` }}>
           {!inTutorial &&
-            data.topics
+            board.topics
               .filter((topic) => topic.id !== 'all' && (topicId === 'all' || topicId === topic.id))
               .map((topic) => {
                 const cards = visibleCards.filter((card) => card.topicId === topic.id)
@@ -670,8 +720,8 @@ function AppContent() {
 
           <svg className="edges" width="1" height="1" overflow="visible">
             {visibleEdges.map((edge) => {
-              const from = data.cards.find((c) => c.id === edge.from)!
-              const to = data.cards.find((c) => c.id === edge.to)!
+              const from = board.cards.find((c) => c.id === edge.from)!
+              const to = board.cards.find((c) => c.id === edge.to)!
               const x1 = from.x + CARD_W / 2
               const y1 = from.y + CARD_H / 2
               const x2 = to.x + CARD_W / 2
@@ -688,7 +738,7 @@ function AppContent() {
             })}
 
             {linkStart && mouseWorld && (() => {
-              const src = data.cards.find((c) => c.id === linkStart)
+              const src = board.cards.find((c) => c.id === linkStart)
               if (!src) return null
               const x1 = src.x + CARD_W / 2
               const y1 = src.y + CARD_H / 2
@@ -708,7 +758,7 @@ function AppContent() {
           </svg>
 
           {visibleCards.map((card) => {
-            const topic = data.topics.find((t) => t.id === card.topicId)
+            const topic = board.topics.find((t) => t.id === card.topicId)
             const meta = kindMeta[card.kind]
             const isLinkSource = linkStart === card.id
             const isLinkTarget = linkStart && !isLinkSource
@@ -726,8 +776,8 @@ function AppContent() {
 
                   if (linkStart) {
                     if (linkStart !== card.id) {
-                      if (!data.connections.some((e) => (e.from === linkStart && e.to === card.id) || (e.from === card.id && e.to === linkStart))) {
-                        addConnectionMutation({ connection: { id: uid(), from: linkStart, to: card.id } });
+                      if (!board.connections.some((e) => (e.from === linkStart && e.to === card.id) || (e.from === card.id && e.to === linkStart))) {
+                        runMutation(addConnectionMutation, [{ connection: { id: uid(), from: linkStart, to: card.id } }]);
                         notify('Connected')
                       }
                     }
@@ -764,8 +814,8 @@ function AppContent() {
                   event.stopPropagation()
                   if (linkStart) {
                     if (linkStart !== card.id) {
-                      if (!data.connections.some((e) => (e.from === linkStart && e.to === card.id) || (e.from === card.id && e.to === linkStart))) {
-                        addConnectionMutation({ connection: { id: uid(), from: linkStart, to: card.id } });
+                      if (!board.connections.some((e) => (e.from === linkStart && e.to === card.id) || (e.from === card.id && e.to === linkStart))) {
+                        runMutation(addConnectionMutation, [{ connection: { id: uid(), from: linkStart, to: card.id } }]);
                         notify('Connected')
                       }
                     }
@@ -781,7 +831,7 @@ function AppContent() {
                         y: (event.clientY - rect.top - cam.y) / cam.zoom,
                       })
                     }
-                    notify('Wire mode: click another card or thread to connect')
+                     notify('Wire mode: click another card or thread to connect')
                   }
                 }}
               >
@@ -846,15 +896,15 @@ function AppContent() {
             </button>
           ) : (
             <>
-              <button onClick={() => addCardAt('knowledge', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY - CARD_H / 2)}>
+              <button onClick={() => addCardAt('knowledge', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY / 2)}>
                 <i className="ctx-dot" style={{ background: kindMeta.knowledge.color }} />
                 Add Knowledge Card
               </button>
-              <button onClick={() => addCardAt('question', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY - CARD_H / 2)}>
+              <button onClick={() => addCardAt('question', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY / 2)}>
                 <i className="ctx-dot" style={{ background: kindMeta.question.color }} />
                 Add Question Card
               </button>
-              <button onClick={() => addCardAt('meaning', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY - CARD_H / 2)}>
+              <button onClick={() => addCardAt('meaning', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY / 2)}>
                 <i className="ctx-dot" style={{ background: kindMeta.meaning.color }} />
                 Add Meaning Card
               </button>
@@ -878,9 +928,9 @@ function AppContent() {
       {selected && (
         <Inspector
           card={selected}
-          topics={data.topics.filter((t) => t.id !== 'all')}
-          connections={data.connections}
-          cards={data.cards}
+          topics={board.topics.filter((t) => t.id !== 'all')}
+          connections={board.connections}
+          cards={board.cards}
           onChange={updateCard}
           onClose={() => setSelectedId(null)}
           onDelete={deleteCard}
@@ -892,6 +942,8 @@ function AppContent() {
           onDisconnect={(targetId) => disconnectCards(selected.id, targetId)}
           inTutorial={inTutorial}
           onFinishTutorial={finishTutorial}
+          runMutation={runMutation}
+          removeConnectionMutation={removeConnectionMutation}
         />
       )}
 
@@ -899,13 +951,13 @@ function AppContent() {
         <div className="edge-popover">
           <span>Connection selected</span>
           <button onClick={removeEdge}><Unlink size={15} /> Disconnect</button>
-          <button className="icon-button" onClick={() => setSelectedEdge(null)}><X size={15} /></button>
+          <button className="icon-button" onClick={() => setSelectedEdge(null)}><X size={15} /> </button>
         </div>
       )}
 
       {bulkOpen && (
         <BulkCapture
-          topics={data.topics.filter((t) => t.id !== 'all')}
+          topics={board.topics.filter((t) => t.id !== 'all')}
           onClose={() => setBulkOpen(false)}
           onAdd={(cards) => {
             cards.forEach(c => upsertCardMutation({ id: c.id, card: c }));
@@ -940,7 +992,9 @@ function AppContent() {
         </div>
       )}
 
-      {toast && <div className="toast"><Check size={15} /> {toast}</div>}
+      {toast && (
+        <div className="toast"><Check size={15} /> {toast}</div>
+      )}
     </main>
   )
 }
@@ -958,6 +1012,8 @@ function Inspector({
   onDisconnect,
   inTutorial,
   onFinishTutorial,
+  runMutation,
+  removeConnectionMutation,
 }: {
   card: ClarityCard
   topics: Topic[]
@@ -971,6 +1027,8 @@ function Inspector({
   onDisconnect: (id: string) => void
   inTutorial?: boolean
   onFinishTutorial?: () => void
+  runMutation: <T extends any[], R>(mutationFn: (...args: T) => Promise<R>, args: T) => Promise<R>
+  removeConnectionMutation: any
 }) {
   const linked = connections
     .filter((edge) => edge.from === card.id || edge.to === card.id)
@@ -1075,13 +1133,15 @@ function Inspector({
         </div>
 
         <div className="field-group">
-          <label className="field-label">Source / Whose perspective?</label>
-          <input
+          <label>
+            <span>Source / Whose perspective?</span>
+            <input
             className="source-input"
             value={card.source ?? ''}
             onChange={(e) => onChange({ source: e.target.value })}
             placeholder="e.g. Conversation, note, reading"
-          />
+            />
+          </label>
         </div>
 
         {card.confidence === 'hypothesis' && (
@@ -1111,7 +1171,7 @@ function Inspector({
                   </button>
                   <button
                     className="connection-unlink-btn"
-                    onClick={() => onDisconnect(item.id)}
+                    onClick={() => runMutation(removeConnectionMutation, [{ id: item.id }])}
                     title="Disconnect this card"
                     aria-label={`Disconnect ${item.title}`}
                   >
@@ -1226,7 +1286,7 @@ function BulkCapture({ topics, onClose, onAdd }: { topics: Topic[]; onClose: () 
   return (
     <div className="modal-backdrop" onPointerDown={onClose}>
       <section className="modal bulk-modal" onPointerDown={(e) => e.stopPropagation()}>
-        <button className="modal-close icon-button" onClick={onClose} aria-label="Close modal"><X size={19} /></button>
+        <button className="modal-close icon-button" onClick={onClose} aria-label="Close modal"><X size={19} /> </button>
         <span className="modal-icon"><Upload size={20} /></span>
         <h2>Drop the whole mess here.</h2>
         <p>One paragraph or bullet becomes one card. Organize it later—capture it now.</p>
@@ -1248,7 +1308,7 @@ function NewTopic({ onClose, onAdd }: { onClose: () => void; onAdd: (topic: Topi
   return (
     <div className="modal-backdrop" onPointerDown={onClose}>
       <section className="modal small-modal" onPointerDown={(e) => e.stopPropagation()}>
-        <button className="modal-close icon-button" onClick={onClose} aria-label="Close modal"><X size={19} /></button>
+        <button className="modal-close icon-button" onClick={onClose} aria-label="Close modal"><X size={19} /> </button>
         <h2>Make a new space</h2>
         <p>A space can hold a topic, chapter, relationship, or ongoing story.</p>
         <input autoFocus className="topic-name-input" placeholder="e.g. School & direction" value={name} onChange={(e) => setName(e.target.value)} />
