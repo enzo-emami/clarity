@@ -3,6 +3,7 @@ import {
   Check,
   Download,
   Focus,
+  FolderPlus,
   Link2,
   Menu,
   Plus,
@@ -20,6 +21,7 @@ import { upgradeBoard } from './expansion'
 import type { BoardData, CardKind, ClarityCard, Confidence, Connection, Topic } from './types'
 
 const STORAGE_KEY = 'clarity-board-v3'
+const TUTORIAL_KEY = 'clarity_tutorial_done_v1'
 const CARD_W = 250
 const CARD_H = 144
 
@@ -52,6 +54,9 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [toast, setToast] = useState<string | null>(null)
 
+  // First-time onboarding tutorial state
+  const [inTutorial, setInTutorial] = useState(() => !localStorage.getItem(TUTORIAL_KEY))
+
   const viewportRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const cardClickRef = useRef<{ id: string; startX: number; startY: number; moved: boolean } | null>(null)
@@ -62,20 +67,25 @@ function App() {
   const cameraRef = useRef(camera)
   cameraRef.current = camera
 
-  const visibleIds = useMemo(() => {
+  const visibleCards = useMemo(() => {
+    if (inTutorial) {
+      return data.cards.filter((c) => c.id.startsWith('tutorial-'))
+    }
     const q = query.toLowerCase().trim()
-    return new Set(
-      data.cards
-        .filter((card) => topicId === 'all' || card.topicId === topicId)
-        .filter((card) => !q || `${card.title} ${card.body}`.toLowerCase().includes(q))
-        .map((card) => card.id),
-    )
-  }, [data.cards, query, topicId])
+    return data.cards
+      .filter((card) => topicId === 'all' || card.topicId === topicId)
+      .filter((card) => !q || `${card.title} ${card.body}`.toLowerCase().includes(q))
+  }, [data.cards, inTutorial, query, topicId])
 
-  const visibleCards = data.cards.filter((card) => visibleIds.has(card.id))
-  const visibleEdges = data.connections.filter(
-    (edge) => visibleIds.has(edge.from) && visibleIds.has(edge.to),
-  )
+  const visibleIds = useMemo(() => new Set(visibleCards.map((c) => c.id)), [visibleCards])
+
+  const visibleEdges = useMemo(() => {
+    if (inTutorial) return []
+    return data.connections.filter(
+      (edge) => visibleIds.has(edge.from) && visibleIds.has(edge.to),
+    )
+  }, [data.connections, inTutorial, visibleIds])
+
   const selected = data.cards.find((card) => card.id === selectedId) ?? null
   const activeTopic = data.topics.find((topic) => topic.id === topicId) ?? data.topics[0]
   const connectedCards = new Set(data.connections.flatMap((edge) => [edge.from, edge.to])).size
@@ -150,7 +160,6 @@ function App() {
     const c = dataRef.current.cards.find((item) => item.id === cardId)
     if (!c || !viewportRef.current) return
     const rect = viewportRef.current.getBoundingClientRect()
-    // Inspector width on desktop is min(760px, 54vw)
     const isDesktop = window.innerWidth > 900
     const inspectorWidth = isDesktop ? Math.min(760, rect.width * 0.54) : 0
     const availWidth = rect.width - inspectorWidth
@@ -233,7 +242,6 @@ function App() {
 
       if (cardClickRef.current) {
         if (!cardClickRef.current.moved) {
-          // Pure click: open the inspector and center the card in the visible canvas!
           const targetId = cardClickRef.current.id
           setSelectedId(targetId)
           setSelectedEdge(null)
@@ -262,7 +270,7 @@ function App() {
 
   const notify = (message: string) => {
     setToast(message)
-    window.setTimeout(() => setToast(null), 2200)
+    window.setTimeout(() => setToast(null), 2400)
   }
 
   const addCardAt = (kind: CardKind = 'knowledge', posX?: number, posY?: number) => {
@@ -293,6 +301,49 @@ function App() {
     setTimeout(() => centerCardInView(id), 50)
   }
 
+  const addTutorialCard = (worldX: number, worldY: number) => {
+    const id = `tutorial-${uid()}`
+    const newCard: ClarityCard = {
+      id,
+      title: 'I think I need some clarity',
+      body: "You take very extensive notes about your life, spend some time organizing them more precisely here. We can take every detail and map out what's in our minds. Ready?",
+      source: 'Welcome to Clarity',
+      kind: 'knowledge',
+      confidence: 'first-hand',
+      status: 'open',
+      topicId: 'story',
+      x: worldX - CARD_W / 2,
+      y: worldY - CARD_H / 2,
+      vx: 0,
+      vy: 0,
+      updatedAt: Date.now(),
+    }
+    setData((old) => ({ ...old, cards: [...old.cards, newCard] }))
+    setSelectedId(id)
+    setCanvasMenu(null)
+    setTimeout(() => centerCardInView(id), 50)
+  }
+
+  const finishTutorial = () => {
+    localStorage.setItem(TUTORIAL_KEY, 'true')
+    setInTutorial(false)
+    notify('Welcome to Clarity')
+  }
+
+  const addThreadAt = (worldX: number, worldY: number) => {
+    const newTopic: Topic = {
+      id: uid(),
+      name: 'New space',
+      color: '#557b72',
+      x: worldX,
+      y: worldY,
+    }
+    setData((old) => ({ ...old, topics: [...old.topics, newTopic] }))
+    setEditingTopic(newTopic)
+    setCanvasMenu(null)
+    notify('New space created')
+  }
+
   const updateCard = (patch: Partial<ClarityCard>) => {
     if (!selectedId) return
     setData((old) => ({
@@ -316,7 +367,7 @@ function App() {
     if (!selectedId) return notify('Choose a card first')
     setLinkStart(selectedId)
     setSelectedId(null)
-    notify('Wire mode: click another card to connect')
+    notify('Wire mode: click another card or thread to connect')
   }
 
   const removeEdge = () => {
@@ -529,7 +580,7 @@ function App() {
           const target = event.target as HTMLElement
           if (
             target.closest(
-              '.map-card, button, a, input, select, textarea, .canvas-toolbar, .map-title, .modal, .inspector, .edge-popover, .link-hint, .toast, .edge, .canvas-context-menu',
+              '.map-card, button, a, input, select, textarea, .canvas-toolbar, .map-title, .modal, .inspector, .edge-popover, .link-hint, .toast, .edge, .canvas-context-menu, .floating-thread',
             )
           ) {
             return
@@ -547,7 +598,7 @@ function App() {
         }}
         onContextMenu={(event) => {
           const target = event.target as HTMLElement
-          if (target.closest('.map-card, .sidebar, .topbar, .inspector, .canvas-toolbar, .modal, .canvas-context-menu')) {
+          if (target.closest('.map-card, .sidebar, .topbar, .inspector, .canvas-toolbar, .modal, .canvas-context-menu, .floating-thread')) {
             return
           }
           event.preventDefault()
@@ -593,12 +644,71 @@ function App() {
           <span className="card-count-badge">{visibleCards.length} cards</span>
         </div>
 
+        {/* Tutorial Start Prompt on Blank Canvas */}
+        {inTutorial && !visibleCards.length && (
+          <div className="tutorial-prompt">
+            <div className="tutorial-prompt-icon"><Sparkles size={28} /></div>
+            <h2>Right-click anywhere to create a card</h2>
+            <p>Spend some time mapping out what’s in your mind</p>
+          </div>
+        )}
+
         <div className="world" style={{ transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.zoom})` }}>
-          {data.topics.filter((topic) => topic.id !== 'all' && (topicId === 'all' || topicId === topic.id)).map((topic) => {
-            const cards = visibleCards.filter((card) => card.topicId === topic.id)
-            if (!cards.length) return null
-            return <div key={topic.id} className="space-heading" style={{ position: 'absolute', left: Math.min(...cards.map((card) => card.x)), top: Math.min(...cards.map((card) => card.y)) - 55, color: topic.color, fontSize: 24, fontWeight: 700, pointerEvents: 'none' }}>{topic.name}</div>
-          })}
+          {/* Floating Threads on Canvas */}
+          {!inTutorial &&
+            data.topics
+              .filter((topic) => topic.id !== 'all' && (topicId === 'all' || topicId === topic.id))
+              .map((topic) => {
+                const cards = visibleCards.filter((card) => card.topicId === topic.id)
+                let posX = topic.x
+                let posY = topic.y
+                if (posX === undefined || posY === undefined) {
+                  if (!cards.length) return null
+                  posX = Math.min(...cards.map((c) => c.x))
+                  posY = Math.min(...cards.map((c) => c.y)) - 55
+                }
+
+                return (
+                  <div
+                    key={topic.id}
+                    className={`floating-thread ${linkStart ? 'wire-target' : ''}`}
+                    style={{
+                      position: 'absolute',
+                      left: posX,
+                      top: posY,
+                      color: topic.color,
+                    }}
+                    onContextMenu={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      setEditingTopic(topic)
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (linkStart) {
+                        setData((old) => ({
+                          ...old,
+                          cards: old.cards.map((c) => (c.id === linkStart ? { ...c, topicId: topic.id } : c)),
+                        }))
+                        notify(`Assigned card to "${topic.name}"`)
+                        setLinkStart(null)
+                        setMouseWorld(null)
+                      } else {
+                        setTopicId(topic.id)
+                      }
+                    }}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation()
+                      setEditingTopic(topic)
+                    }}
+                    title={linkStart ? `Connect card to "${topic.name}" space` : `Space: ${topic.name} (Right-click to edit)`}
+                  >
+                    <span className="topic-dot" style={{ background: topic.color }} />
+                    <span>{topic.name}</span>
+                    {linkStart && <span className="thread-connect-hint">+ Drop into thread</span>}
+                  </div>
+                )
+              })}
 
           <svg className="edges" width="1" height="1" overflow="visible">
             {visibleEdges.map((edge) => {
@@ -653,7 +763,7 @@ function App() {
                 style={{ transform: `translate(${card.x}px, ${card.y}px)`, '--kind-color': meta.color } as React.CSSProperties}
                 onDragStart={(e) => e.preventDefault()}
                 onPointerDown={(event) => {
-                  if (event.button !== 0) return // Only left-click initiates card drag/click
+                  if (event.button !== 0) return
                   if ((event.target as HTMLElement).closest('button, a, input, select, textarea')) return
                   event.stopPropagation()
 
@@ -714,7 +824,7 @@ function App() {
                         y: (event.clientY - rect.top - cam.y) / cam.zoom,
                       })
                     }
-                    notify('Wire mode: click another card to connect')
+                    notify('Wire mode: click another card or thread to connect')
                   }
                 }}
               >
@@ -735,7 +845,7 @@ function App() {
           })}
         </div>
 
-        {!visibleCards.length && (
+        {!visibleCards.length && !inTutorial && (
           <div className="empty-state">
             <div><Sparkles size={24} /></div>
             <h2>There’s room to think here.</h2>
@@ -773,25 +883,39 @@ function App() {
           style={{ left: canvasMenu.clientX, top: canvasMenu.clientY }}
           onPointerDown={(e) => e.stopPropagation()}
         >
-          <button onClick={() => addCardAt('knowledge', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY - CARD_H / 2)}>
-            <i className="ctx-dot" style={{ background: kindMeta.knowledge.color }} />
-            Add Knowledge Card
-          </button>
-          <button onClick={() => addCardAt('question', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY - CARD_H / 2)}>
-            <i className="ctx-dot" style={{ background: kindMeta.question.color }} />
-            Add Question Card
-          </button>
-          <button onClick={() => addCardAt('meaning', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY - CARD_H / 2)}>
-            <i className="ctx-dot" style={{ background: kindMeta.meaning.color }} />
-            Add Meaning Card
-          </button>
-          <hr />
-          <button onClick={() => { setBulkOpen(true); setCanvasMenu(null) }}>
-            <Upload size={14} /> Quick capture
-          </button>
-          <button onClick={() => { fitView(); setCanvasMenu(null) }}>
-            <Focus size={14} /> Fit map in view
-          </button>
+          {inTutorial ? (
+            <button onClick={() => addTutorialCard(canvasMenu.worldX, canvasMenu.worldY)}>
+              <Sparkles size={16} color="#304941" />
+              Create card
+            </button>
+          ) : (
+            <>
+              <button onClick={() => addCardAt('knowledge', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY - CARD_H / 2)}>
+                <i className="ctx-dot" style={{ background: kindMeta.knowledge.color }} />
+                Add Knowledge Card
+              </button>
+              <button onClick={() => addCardAt('question', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY - CARD_H / 2)}>
+                <i className="ctx-dot" style={{ background: kindMeta.question.color }} />
+                Add Question Card
+              </button>
+              <button onClick={() => addCardAt('meaning', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY - CARD_H / 2)}>
+                <i className="ctx-dot" style={{ background: kindMeta.meaning.color }} />
+                Add Meaning Card
+              </button>
+              <hr />
+              <button onClick={() => addThreadAt(canvasMenu.worldX, canvasMenu.worldY)}>
+                <FolderPlus size={15} color="#557b72" />
+                Add Thread / Space Here
+              </button>
+              <hr />
+              <button onClick={() => { setBulkOpen(true); setCanvasMenu(null) }}>
+                <Upload size={14} /> Quick capture
+              </button>
+              <button onClick={() => { fitView(); setCanvasMenu(null) }}>
+                <Focus size={14} /> Fit map in view
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -810,6 +934,8 @@ function App() {
             centerCardInView(id)
           }}
           onDisconnect={(targetId) => disconnectCards(selected.id, targetId)}
+          inTutorial={inTutorial}
+          onFinishTutorial={finishTutorial}
         />
       )}
 
@@ -855,7 +981,7 @@ function App() {
 
       {linkStart && (
         <div className="link-hint">
-          <Link2 size={15} /> Click another card to connect (or right-click) <button onClick={() => { setLinkStart(null); setMouseWorld(null) }}>Cancel</button>
+          <Link2 size={15} /> Click another card or thread to connect <button onClick={() => { setLinkStart(null); setMouseWorld(null) }}>Cancel</button>
         </div>
       )}
 
@@ -875,6 +1001,8 @@ function Inspector({
   onLink,
   onSelectCard,
   onDisconnect,
+  inTutorial,
+  onFinishTutorial,
 }: {
   card: ClarityCard
   topics: Topic[]
@@ -886,6 +1014,8 @@ function Inspector({
   onLink: () => void
   onSelectCard: (id: string) => void
   onDisconnect: (id: string) => void
+  inTutorial?: boolean
+  onFinishTutorial?: () => void
 }) {
   const linked = connections
     .filter((edge) => edge.from === card.id || edge.to === card.id)
@@ -907,6 +1037,18 @@ function Inspector({
       </div>
 
       <div className="inspector-scroll-area">
+        {inTutorial && onFinishTutorial && (
+          <div className="tutorial-ready-banner">
+            <div>
+              <p>Ready to see your life map?</p>
+              <span>We can map out every detail together.</span>
+            </div>
+            <button className="primary-button ready-btn" onClick={onFinishTutorial}>
+              <Check size={16} /> Yes, I'm ready
+            </button>
+          </div>
+        )}
+
         <div className="kind-switcher">
           {(Object.keys(kindMeta) as CardKind[]).map((kind) => (
             <button

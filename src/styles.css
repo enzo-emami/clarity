@@ -87,6 +87,7 @@ button { color: inherit; }
 .privacy-note button, .privacy-note label { display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; color: #68736e; padding: 0; font-size: 9px; cursor: pointer; }
 .privacy-note input { display: none; }
 
+/* Canvas & Background Dot Grid Pattern */
 .canvas {
   grid-column: 2;
   grid-row: 2;
@@ -94,8 +95,8 @@ button { color: inherit; }
   overflow: hidden;
   cursor: grab;
   background-color: #f5f1e8;
-  background-image: radial-gradient(rgba(52,68,62,.13) .65px, transparent .65px);
-  background-size: 19px 19px;
+  background-image: radial-gradient(rgba(48, 73, 65, 0.24) 1.3px, transparent 1.3px);
+  background-size: 22px 22px;
   user-select: none !important;
   -webkit-user-select: none !important;
 }
@@ -132,6 +133,44 @@ button { color: inherit; }
 .edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
 .edge { pointer-events: stroke; fill: none; stroke: #aeb7b1; stroke-width: 1.5; opacity: .65; cursor: pointer; transition: stroke .2s, stroke-width .2s; }
 .edge:hover, .edge.selected { stroke: #476f64; stroke-width: 4; opacity: .9; }
+
+/* Floating Threads on Canvas */
+.floating-thread {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: 700 20px 'Newsreader', serif;
+  cursor: pointer;
+  padding: 5px 12px;
+  border-radius: 9px;
+  background: rgba(255, 254, 250, 0.75);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(48, 58, 54, 0.1);
+  box-shadow: 0 4px 14px rgba(48, 58, 54, 0.05);
+  transition: all .15s ease;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  z-index: 2;
+}
+.floating-thread:hover {
+  background: rgba(255, 254, 250, 0.98);
+  border-color: rgba(48, 58, 54, 0.25);
+  box-shadow: 0 6px 18px rgba(48, 58, 54, 0.08);
+  transform: translateY(-1px);
+}
+.floating-thread.wire-target {
+  border-color: #e29b45 !important;
+  box-shadow: 0 0 0 3px rgba(226, 155, 69, 0.3) !important;
+  background: #fff8f0 !important;
+}
+.thread-connect-hint {
+  font: 600 11px 'Manrope', sans-serif;
+  color: #b56d1c;
+  background: #faeedb;
+  padding: 2px 7px;
+  border-radius: 10px;
+  margin-left: 4px;
+}
 
 /* Live wire drawing */
 .live-wire {
@@ -256,6 +295,76 @@ button { color: inherit; }
 .empty-state > div { width: 50px; height: 50px; display: grid; place-items: center; color: #557b72; background: #e5e9e2; border-radius: 18px; }
 .empty-state h2 { margin: 15px 0 5px; font: 600 24px 'Newsreader'; }
 .empty-state p { margin: 0 0 17px; color: #7b8580; font-size: 11px; }
+
+/* Tutorial Prompt & Ready Banner */
+.tutorial-prompt {
+  position: absolute;
+  top: 45%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  pointer-events: none;
+  animation: tutorialFloat 3.5s ease-in-out infinite;
+  z-index: 5;
+}
+@keyframes tutorialFloat {
+  0%, 100% { transform: translate(-50%, -50%); }
+  50% { transform: translate(-50%, -54%); }
+}
+.tutorial-prompt-icon {
+  width: 62px;
+  height: 62px;
+  display: grid;
+  place-items: center;
+  color: #314a42;
+  background: #e2ece6;
+  border-radius: 20px;
+  box-shadow: 0 10px 28px rgba(49, 74, 66, 0.12);
+  margin-bottom: 18px;
+}
+.tutorial-prompt h2 {
+  font: 600 32px 'Newsreader', serif;
+  color: #24302b;
+  margin: 0 0 8px;
+}
+.tutorial-prompt p {
+  font: 500 14px 'Manrope', sans-serif;
+  color: #6d7772;
+  margin: 0;
+}
+
+.tutorial-ready-banner {
+  margin: 10px 0 20px;
+  padding: 16px 20px;
+  background: #eff6f3;
+  border: 1px solid #cce0d7;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  box-shadow: 0 4px 16px rgba(49, 74, 66, 0.05);
+}
+.tutorial-ready-banner p {
+  margin: 0 0 3px;
+  font: 700 15px 'Newsreader', serif;
+  color: #213a32;
+}
+.tutorial-ready-banner span {
+  font: 500 12px 'Manrope', sans-serif;
+  color: #5d6f68;
+}
+.ready-btn {
+  height: 42px;
+  padding: 0 20px;
+  font-size: 13px;
+  white-space: nowrap;
+  background: #2b453d;
+  box-shadow: 0 4px 12px rgba(43, 69, 61, 0.2);
+}
 
 /* Canvas Context Menu */
 .canvas-context-menu {

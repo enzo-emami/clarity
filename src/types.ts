@@ -6,6 +6,8 @@ export type Topic = {
   id: string
   name: string
   color: string
+  x?: number
+  y?: number
 }
 
 export type ClarityCard = {
