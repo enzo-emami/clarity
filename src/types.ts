@@ -21,8 +21,8 @@ export type ClarityCard = {
   topicId: string
   x: number
   y: number
-  vx: number
-  vy: number
+  vx?: number
+  vy?: number
   updatedAt: number
 }
 
