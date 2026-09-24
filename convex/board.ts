@@ -14,20 +14,18 @@ export const getBoardData = query({
 export const updateCard = mutation({
   args: { id: v.string(), updates: v.any() },
   handler: async (ctx, args) => {
-    const card = await ctx.db.get(args.id);
+    const card = await ctx.db.query("cards").withIndex("idx_id", (q) => q.eq("id", args.id)).first();
     if (!card) {
-        // For simplification in this demo, if card not found, we create it.
-        // In a real app we'd handle this more strictly.
         return;
     }
-    await ctx.db.patch(args.id, args.updates);
+    await ctx.db.patch(card._id, args.updates);
   },
 });
 
 export const upsertCard = mutation({
   args: { id: v.string(), card: v.any() },
   handler: async (ctx, args) => {
-    const existing = await ctx.db.query("cards").withIndex("by_id", (q) => q.eq("value", args.id)).first();
+    const existing = await ctx.db.query("cards").withIndex("idx_id", (q) => q.eq("id", args.id)).first();
     if (existing) {
       await ctx.db.patch(existing._id, args.card);
     } else {
@@ -46,7 +44,7 @@ export const addConnection = mutation({
 export const removeConnection = mutation({
   args: { id: v.string() },
   handler: async (ctx, args) => {
-    const conn = await ctx.db.query("connections").withIndex("by_id", (q) => q.eq("value", args.id)).first();
+    const conn = await ctx.db.query("connections").withIndex("idx_id", (q) => q.eq("id", args.id)).first();
     if (conn) await ctx.db.delete(conn._id);
   },
 });

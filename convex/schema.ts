@@ -14,17 +14,17 @@ export default defineSchema({
     source: v.string(),
     status: v.string(),
     updatedAt: v.number(),
-  }).index("by_id", ["id"]),
+  }).index("idx_id", ["id"]),
 
   connections: defineTable({
     id: v.string(),
     from: v.string(),
     to: v.string(),
-  }).index("by_id", ["id"]),
+  }).index("idx_id", ["id"]),
 
   topics: defineTable({
     id: v.string(),
     name: v.string(),
     color: v.string(),
-  }).index("by_id", ["id"]),
+  }).index("idx_id", ["id"]),
 });
