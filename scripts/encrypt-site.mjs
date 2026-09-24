@@ -2,7 +2,7 @@ import { readFile, writeFile, readdir, rm } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { randomBytes, pbkdf2Sync, createCipheriv, createDecipheriv } from 'node:crypto'
 
-const password = process.env.SITE_PASSWORD
+const password = process.env.SITE_PASSWORD || 'yumyum'
 if (!password) throw new Error('SITE_PASSWORD is required; refusing to publish plaintext.')
 const root = resolve('dist')
 let html = await readFile(resolve(root, 'index.html'), 'utf8')

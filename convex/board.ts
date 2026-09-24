@@ -16,7 +16,7 @@ export const updateCard = mutation({
   handler: async (ctx, args) => {
     const card = await ctx.db.query("cards").withIndex("idx_id", (q) => q.eq("id", args.id)).first();
     if (!card) {
-        return;
+      return;
     }
     await ctx.db.patch(card._id, args.updates);
   },
@@ -34,10 +34,32 @@ export const upsertCard = mutation({
   },
 });
 
+export const deleteCard = mutation({
+  args: { id: v.string() },
+  handler: async (ctx, args) => {
+    const card = await ctx.db.query("cards").withIndex("idx_id", (q) => q.eq("id", args.id)).first();
+    if (card) {
+      await ctx.db.delete(card._id);
+    }
+    const conns = await ctx.db.query("connections").collect();
+    for (const conn of conns) {
+      if (conn.from === args.id || conn.to === args.id) {
+        await ctx.db.delete(conn._id);
+      }
+    }
+  },
+});
+
 export const addConnection = mutation({
   args: { connection: v.any() },
   handler: async (ctx, args) => {
-    await ctx.db.insert("connections", args.connection);
+    const existing = await ctx.db
+      .query("connections")
+      .withIndex("idx_id", (q) => q.eq("id", args.connection.id))
+      .first();
+    if (!existing) {
+      await ctx.db.insert("connections", args.connection);
+    }
   },
 });
 
@@ -46,6 +68,59 @@ export const removeConnection = mutation({
   handler: async (ctx, args) => {
     const conn = await ctx.db.query("connections").withIndex("idx_id", (q) => q.eq("id", args.id)).first();
     if (conn) await ctx.db.delete(conn._id);
+  },
+});
+
+export const disconnectCards = mutation({
+  args: { from: v.string(), to: v.string() },
+  handler: async (ctx, args) => {
+    const conns = await ctx.db.query("connections").collect();
+    for (const conn of conns) {
+      if (
+        (conn.from === args.from && conn.to === args.to) ||
+        (conn.from === args.to && conn.to === args.from)
+      ) {
+        await ctx.db.delete(conn._id);
+      }
+    }
+  },
+});
+
+export const upsertTopic = mutation({
+  args: { id: v.string(), topic: v.any() },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db.query("topics").withIndex("idx_id", (q) => q.eq("id", args.id)).first();
+    if (existing) {
+      await ctx.db.patch(existing._id, args.topic);
+    } else {
+      await ctx.db.insert("topics", { ...args.topic });
+    }
+  },
+});
+
+export const updateTopic = mutation({
+  args: { id: v.string(), updates: v.any() },
+  handler: async (ctx, args) => {
+    const topic = await ctx.db.query("topics").withIndex("idx_id", (q) => q.eq("id", args.id)).first();
+    if (topic) {
+      await ctx.db.patch(topic._id, args.updates);
+    }
+  },
+});
+
+export const deleteTopic = mutation({
+  args: { id: v.string() },
+  handler: async (ctx, args) => {
+    const topic = await ctx.db.query("topics").withIndex("idx_id", (q) => q.eq("id", args.id)).first();
+    if (topic) {
+      await ctx.db.delete(topic._id);
+    }
+    const cards = await ctx.db.query("cards").collect();
+    for (const c of cards) {
+      if (c.topicId === args.id) {
+        await ctx.db.patch(c._id, { topicId: "story" });
+      }
+    }
   },
 });
 

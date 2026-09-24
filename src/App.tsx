@@ -35,8 +35,13 @@ function AppContent() {
   const data = useQuery(api.board.getBoardData);
   const updateCardMutation = useMutation(api.board.updateCard);
   const upsertCardMutation = useMutation(api.board.upsertCard);
+  const deleteCardMutation = useMutation(api.board.deleteCard);
   const addConnectionMutation = useMutation(api.board.addConnection);
   const removeConnectionMutation = useMutation(api.board.removeConnection);
+  const disconnectCardsMutation = useMutation(api.board.disconnectCards);
+  const upsertTopicMutation = useMutation(api.board.upsertTopic);
+  const updateTopicMutation = useMutation(api.board.updateTopic);
+  const deleteTopicMutation = useMutation(api.board.deleteTopic);
   const seedBoardMutation = useMutation(api.board.seedBoard);
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -178,8 +183,8 @@ function AppContent() {
             card.vy = 0
             return
           }
-          card.vx *= 0.65
-          card.vy *= 0.65
+          card.vx = (card.vx ?? 0) * 0.65
+          card.vy = (card.vy ?? 0) * 0.65
           if (Math.hypot(card.vx, card.vy) < 0.01) { card.vx = 0; card.vy = 0 }
           card.x += card.vx
           card.y += card.vy
@@ -371,7 +376,8 @@ function AppContent() {
       x: worldX,
       y: worldY,
     }
-    notify('New space created (TBD sync)')
+    runMutation(upsertTopicMutation, [{ id: newTopic.id, topic: newTopic }])
+    notify('New space created')
     setCanvasMenu(null)
   }
 
@@ -382,8 +388,9 @@ function AppContent() {
 
   const deleteCard = () => {
     if (!selectedId) return
-    notify('Card removal sync pending')
+    runMutation(deleteCardMutation, [{ id: selectedId }])
     setSelectedId(null)
+    notify('Card deleted')
   }
 
   const startLink = () => {
@@ -401,27 +408,31 @@ function AppContent() {
   }
 
   const disconnectCards = (fromId: string, toId: string) => {
-    notify('Connection removed sync pending')
+    runMutation(disconnectCardsMutation, [{ from: fromId, to: toId }])
+    notify('Cards disconnected')
   }
 
   const saveTopicTitle = () => {
     const trimmed = tempTopicName.trim()
     if (trimmed && trimmed !== activeTopic.name) {
-      notify('Space renamed sync pending')
+      runMutation(updateTopicMutation, [{ id: activeTopic.id, updates: { name: trimmed } }])
+      notify('Space renamed')
     }
     setEditingTitle(false)
   }
 
   const updateTopic = (targetTopicId: string, patch: { name: string; color: string }) => {
-    notify('Space updated sync pending')
+    runMutation(updateTopicMutation, [{ id: targetTopicId, updates: patch }])
+    notify('Space updated')
     setEditingTopic(null)
   }
 
   const deleteTopic = (targetTopicId: string) => {
     if (targetTopicId === 'all') return
-    notify('Space removed sync pending')
+    runMutation(deleteTopicMutation, [{ id: targetTopicId }])
     if (topicId === targetTopicId) setTopicId('all')
     setEditingTopic(null)
+    notify('Space removed')
   }
 
   const fitView = useCallback(() => {
@@ -599,42 +610,42 @@ function AppContent() {
           ) {
             return
           }
-          event.preventDefault()
-          window.getSelection()?.removeAllRanges()
-          setSelectedId(null)
-          setSelectedEdge(null)
-          panning.current = {
-            sx: event.clientX,
-            sy: event.clientY,
-            cx: cameraRef.current.x,
-            cy: cameraRef.current.y,
+          if (event.button === 0) {
+            setSelectedId(null)
+            setSelectedEdge(null)
+            panning.current = {
+              sx: event.clientX,
+              sy: event.clientY,
+              cx: camera.x,
+              cy: camera.y,
+            }
           }
         }}
         onContextMenu={(event) => {
           const target = event.target as HTMLElement
-          if (target.closest('.map-card, .sidebar, .topbar, .inspector, .canvas-toolbar, .modal, .canvas-context-menu, .floating-thread')) {
-            return
-          }
+          if (target.closest('.map-card, button, a, input, select, textarea, .modal, .inspector, .canvas-toolbar, .floating-thread')) return
           event.preventDefault()
-          if (!viewportRef.current) return
-          const rect = viewportRef.current.getBoundingClientRect()
-          const cam = cameraRef.current
-          const worldX = (event.clientX - rect.left - cam.x) / cam.zoom
-          const worldY = (event.clientY - rect.top - cam.y) / cam.zoom
+          const rect = viewportRef.current!.getBoundingClientRect()
           setCanvasMenu({
             clientX: event.clientX,
             clientY: event.clientY,
-            worldX,
-            worldY,
+            worldX: (event.clientX - rect.left - camera.x) / camera.zoom,
+            worldY: (event.clientY - rect.top - camera.y) / camera.zoom,
           })
         }}
       >
+        <div className="canvas-toolbar">
+          <button className="icon-button" onClick={zoomIn} title="Zoom in" aria-label="Zoom in"><ZoomIn size={18} /></button>
+          <button className="icon-button" onClick={zoomOut} title="Zoom out" aria-label="Zoom out"><ZoomOut size={18} /></button>
+          <button className="icon-button" onClick={resetZoom} title="Reset zoom (100%)" aria-label="Reset zoom">1:1</button>
+          <button className="icon-button" onClick={fitView} title="Fit all cards in view" aria-label="Fit all cards in view"><Focus size={18} /></button>
+        </div>
+
         <div className="map-title">
-          <span className="topic-dot" style={{ background: activeTopic.color }} />
           {editingTitle ? (
             <input
               autoFocus
-              className="topic-inline-input"
+              className="space-title-input"
               value={tempTopicName}
               onChange={(e) => setTempTopicName(e.target.value)}
               onBlur={saveTopicTitle}
@@ -645,12 +656,13 @@ function AppContent() {
             />
           ) : (
             <h1
-              className="editable-title"
               onClick={() => {
-                setTempTopicName(activeTopic.name)
-                setEditingTitle(true)
+                if (activeTopic.id !== 'all') {
+                  setTempTopicName(activeTopic.name)
+                  setEditingTitle(true)
+                }
               }}
-              title="Click to rename space"
+              title={activeTopic.id !== 'all' ? 'Click to rename this space' : undefined}
             >
               {activeTopic.name}
             </h1>
@@ -661,8 +673,8 @@ function AppContent() {
         {inTutorial && !visibleCards.length && (
           <div className="tutorial-prompt">
             <div className="tutorial-prompt-icon"><Sparkles size={28} /></div>
-            <h2>Right-click anywhere to create a card</h2>
-            <p>Spend some time mapping out what’s in your mind</p>
+            <h3>Organize your thoughts</h3>
+            <p>Right-click or double-click anywhere to place your first thought.</p>
           </div>
         )}
 
@@ -671,11 +683,13 @@ function AppContent() {
             board.topics
               .filter((topic) => topic.id !== 'all' && (topicId === 'all' || topicId === topic.id))
               .map((topic) => {
-                const cards = visibleCards.filter((card) => card.topicId === topic.id)
-                let posX = topic.x
-                let posY = topic.y
-                if (posX === undefined || posY === undefined) {
-                  if (!cards.length) return null
+                const cards = board.cards.filter((c) => c.topicId === topic.id)
+                if (!cards.length && topic.x === undefined) return null
+
+                let posX = topic.x ?? 0
+                let posY = topic.y ?? 0
+
+                if (topic.x === undefined && cards.length) {
                   posX = Math.min(...cards.map((c) => c.x))
                   posY = Math.min(...cards.map((c) => c.y)) - 55
                 }
@@ -698,7 +712,8 @@ function AppContent() {
                     onClick={(e) => {
                       e.stopPropagation()
                       if (linkStart) {
-                        notify(`Assigned card to "${topic.name}" (Sync pending)`)
+                        runMutation(updateCardMutation, [{ id: linkStart, updates: { topicId: topic.id, updatedAt: Date.now() } }])
+                        notify(`Assigned card to "${topic.name}"`)
                         setLinkStart(null)
                         setMouseWorld(null)
                       } else {
@@ -758,22 +773,19 @@ function AppContent() {
           </svg>
 
           {visibleCards.map((card) => {
+            const isSelected = selectedId === card.id
             const topic = board.topics.find((t) => t.id === card.topicId)
-            const meta = kindMeta[card.kind]
-            const isLinkSource = linkStart === card.id
-            const isLinkTarget = linkStart && !isLinkSource
-
             return (
               <article
                 key={card.id}
-                className={`map-card ${card.kind} ${selectedId === card.id ? 'selected' : ''} ${isLinkSource ? 'link-source' : ''} ${isLinkTarget ? 'wire-target' : ''} ${card.status === 'rejected' ? 'rejected' : ''}`}
-                style={{ transform: `translate(${card.x}px, ${card.y}px)`, '--kind-color': meta.color } as React.CSSProperties}
-                onDragStart={(e) => e.preventDefault()}
+                className={`map-card ${isSelected ? 'selected' : ''} ${linkStart && linkStart !== card.id ? 'wire-target' : ''}`}
+                style={{
+                  transform: `translate(${card.x}px, ${card.y}px)`,
+                  width: CARD_W,
+                }}
                 onPointerDown={(event) => {
-                  if (event.button !== 0) return
-                  if ((event.target as HTMLElement).closest('button, a, input, select, textarea')) return
+                  if ((event.target as HTMLElement).closest('button, select, input, textarea, a')) return
                   event.stopPropagation()
-
                   if (linkStart) {
                     if (linkStart !== card.id) {
                       if (!board.connections.some((e) => (e.from === linkStart && e.to === card.id) || (e.from === card.id && e.to === linkStart))) {
@@ -785,19 +797,16 @@ function AppContent() {
                     setMouseWorld(null)
                     return
                   }
-
-                  const rect = viewportRef.current!.getBoundingClientRect()
-                  const cam = cameraRef.current
-                  const worldX = (event.clientX - rect.left - cam.x) / cam.zoom
-                  const worldY = (event.clientY - rect.top - cam.y) / cam.zoom
-
                   cardClickRef.current = {
                     id: card.id,
                     startX: event.clientX,
                     startY: event.clientY,
                     moved: false,
                   }
-
+                  const cam = cameraRef.current
+                  const rect = viewportRef.current!.getBoundingClientRect()
+                  const worldX = (event.clientX - rect.left - cam.x) / cam.zoom
+                  const worldY = (event.clientY - rect.top - cam.y) / cam.zoom
                   dragging.current = {
                     id: card.id,
                     dx: worldX - card.x,
@@ -809,9 +818,8 @@ function AppContent() {
                     vy: 0,
                   }
                 }}
-                onContextMenu={(event) => {
-                  event.preventDefault()
-                  event.stopPropagation()
+                onClick={(e) => {
+                  e.stopPropagation()
                   if (linkStart) {
                     if (linkStart !== card.id) {
                       if (!board.connections.some((e) => (e.from === linkStart && e.to === card.id) || (e.from === card.id && e.to === linkStart))) {
@@ -821,65 +829,31 @@ function AppContent() {
                     }
                     setLinkStart(null)
                     setMouseWorld(null)
-                  } else {
-                    setLinkStart(card.id)
-                    if (viewportRef.current) {
-                      const rect = viewportRef.current.getBoundingClientRect()
-                      const cam = cameraRef.current
-                      setMouseWorld({
-                        x: (event.clientX - rect.left - cam.x) / cam.zoom,
-                        y: (event.clientY - rect.top - cam.y) / cam.zoom,
-                      })
-                    }
-                     notify('Wire mode: click another card or thread to connect')
                   }
                 }}
               >
                 <div className="card-topline">
-                  <span className="kind-pill"><i>{meta.symbol}</i>{meta.label}</span>
+                  <span className="card-kind-tag" style={{ color: kindMeta[card.kind].color }}>
+                    <i>{kindMeta[card.kind].symbol}</i>
+                    {kindMeta[card.kind].label}
+                  </span>
+                  {topic && (
+                    <span className="card-topic-pill" style={{ borderColor: `${topic.color}55`, color: topic.color }}>
+                      {topic.name}
+                    </span>
+                  )}
                 </div>
-                <h2>{card.title}</h2>
-                <p>{card.body || 'Click to view and edit details…'}</p>
-                <footer>
-                  <span className="tiny-dot" style={{ background: topic?.color }} />
-                  {topic?.name}
-                  {card.source && <span className="source-label">{card.source}</span>}
-                  {card.confidence === 'hypothesis' && <span className="hypothesis">hypothesis</span>}
-                  {card.status === 'resolved' && <span className="resolved"><Check size={11} /> resolved</span>}
-                </footer>
+
+                <h3 className="card-title">{card.title}</h3>
+                {card.body && <p className="card-body-preview">{card.body}</p>}
+
+                <div className="card-foot">
+                  <span className={`status-badge status-${card.status}`}>{card.status}</span>
+                  {card.confidence === 'hypothesis' && <span className="hypo-indicator">Hypothesis</span>}
+                </div>
               </article>
             )
           })}
-        </div>
-
-        {!visibleCards.length && !inTutorial && (
-          <div className="empty-state">
-            <div><Sparkles size={24} /></div>
-            <h2>There’s room to think here.</h2>
-            <p>Add the first card, or quick-capture a messy pile of thoughts.</p>
-            <button className="primary-button" onClick={() => addCardAt()}><Plus size={17} /> Add a card</button>
-          </div>
-        )}
-
-        <div className="canvas-toolbar">
-          <button onClick={zoomOut} title="Zoom out" aria-label="Zoom out"><ZoomOut size={16} /></button>
-          <button className="zoom-btn" onClick={resetZoom} title="Reset zoom to 100%">{Math.round(camera.zoom * 100)}%</button>
-          <button onClick={zoomIn} title="Zoom in" aria-label="Zoom in"><ZoomIn size={16} /></button>
-          <span className="toolbar-divider" />
-          <button onClick={fitView} title="Fit all cards in view" aria-label="Fit map"><Focus size={16} /></button>
-          <span className="toolbar-divider" />
-          <button
-            onClick={startLink}
-            className={linkStart ? 'active-link' : ''}
-            title={linkStart ? 'Cancel wire mode (Esc)' : 'Wire connection mode (or right-click any card)'}
-            aria-label="Connect cards"
-          >
-            <Link2 size={16} />
-          </button>
-        </div>
-
-        <div className="legend">
-          {(Object.keys(kindMeta) as CardKind[]).map((kind) => <span key={kind}><i style={{ background: kindMeta[kind].color }} />{kindMeta[kind].label}</span>)}
         </div>
       </section>
 
@@ -887,38 +861,32 @@ function AppContent() {
         <div
           className="canvas-context-menu"
           style={{ left: canvasMenu.clientX, top: canvasMenu.clientY }}
-          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
         >
           {inTutorial ? (
-            <button onClick={() => addTutorialCard(canvasMenu.worldX, canvasMenu.worldY)}>
-              <Sparkles size={16} color="#304941" />
-              Create card
-            </button>
+            <div className="menu-group">
+              <button onClick={() => addTutorialCard(canvasMenu.worldX, canvasMenu.worldY)}>
+                <Sparkles size={16} /> Add First Thought Card
+              </button>
+            </div>
           ) : (
             <>
-              <button onClick={() => addCardAt('knowledge', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY / 2)}>
+              <div className="menu-header">Add to this space</div>
+              <button onClick={() => addCardAt('knowledge', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY - CARD_H / 2)}>
                 <i className="ctx-dot" style={{ background: kindMeta.knowledge.color }} />
                 Add Knowledge Card
               </button>
-              <button onClick={() => addCardAt('question', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY / 2)}>
+              <button onClick={() => addCardAt('question', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY - CARD_H / 2)}>
                 <i className="ctx-dot" style={{ background: kindMeta.question.color }} />
                 Add Question Card
               </button>
-              <button onClick={() => addCardAt('meaning', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY / 2)}>
+              <button onClick={() => addCardAt('meaning', canvasMenu.worldX - CARD_W / 2, canvasMenu.worldY - CARD_H / 2)}>
                 <i className="ctx-dot" style={{ background: kindMeta.meaning.color }} />
                 Add Meaning Card
               </button>
-              <hr />
+              <div className="menu-divider" />
               <button onClick={() => addThreadAt(canvasMenu.worldX, canvasMenu.worldY)}>
-                <FolderPlus size={15} color="#557b72" />
-                Add Thread / Space Here
-              </button>
-              <hr />
-              <button onClick={() => { setBulkOpen(true); setCanvasMenu(null) }}>
-                <Upload size={14} /> Quick capture
-              </button>
-              <button onClick={() => { fitView(); setCanvasMenu(null) }}>
-                <Focus size={14} /> Fit map in view
+                <FolderPlus size={15} /> Add Space Here
               </button>
             </>
           )}
@@ -942,8 +910,6 @@ function AppContent() {
           onDisconnect={(targetId) => disconnectCards(selected.id, targetId)}
           inTutorial={inTutorial}
           onFinishTutorial={finishTutorial}
-          runMutation={runMutation}
-          removeConnectionMutation={removeConnectionMutation}
         />
       )}
 
@@ -960,7 +926,7 @@ function AppContent() {
           topics={board.topics.filter((t) => t.id !== 'all')}
           onClose={() => setBulkOpen(false)}
           onAdd={(cards) => {
-            cards.forEach(c => upsertCardMutation({ id: c.id, card: c }));
+            cards.forEach(c => runMutation(upsertCardMutation, [{ id: c.id, card: c }]));
             setBulkOpen(false)
             notify(`${cards.length} cards added`)
           }}
@@ -971,8 +937,10 @@ function AppContent() {
         <NewTopic
           onClose={() => setTopicsOpen(false)}
           onAdd={(topic) => {
+            runMutation(upsertTopicMutation, [{ id: topic.id, topic }])
             setTopicId(topic.id)
             setTopicsOpen(false)
+            notify('Space created')
           }}
         />
       )}
@@ -1012,8 +980,6 @@ function Inspector({
   onDisconnect,
   inTutorial,
   onFinishTutorial,
-  runMutation,
-  removeConnectionMutation,
 }: {
   card: ClarityCard
   topics: Topic[]
@@ -1027,8 +993,6 @@ function Inspector({
   onDisconnect: (id: string) => void
   inTutorial?: boolean
   onFinishTutorial?: () => void
-  runMutation: <T extends any[], R>(mutationFn: (...args: T) => Promise<R>, args: T) => Promise<R>
-  removeConnectionMutation: any
 }) {
   const linked = connections
     .filter((edge) => edge.from === card.id || edge.to === card.id)
@@ -1171,7 +1135,7 @@ function Inspector({
                   </button>
                   <button
                     className="connection-unlink-btn"
-                    onClick={() => runMutation(removeConnectionMutation, [{ id: item.id }])}
+                    onClick={() => onDisconnect(item.id)}
                     title="Disconnect this card"
                     aria-label={`Disconnect ${item.title}`}
                   >
@@ -1319,11 +1283,16 @@ function NewTopic({ onClose, onAdd }: { onClose: () => void; onAdd: (topic: Topi
   )
 }
 
+const CONVEX_URL = (import.meta.env.VITE_CONVEX_URL as string | undefined) || 'https://cheerful-snake-239.convex.cloud'
+const convexClient = new ConvexReactClient(CONVEX_URL)
+
 export function App() {
   return (
-    <ConvexProvider client={new ConvexReactClient(import.meta.env.VITE_CONVEX_URL)}>
-      <AppContent />
-    </ConvexProvider>
+    <ErrorBoundary>
+      <ConvexProvider client={convexClient}>
+        <AppContent />
+      </ConvexProvider>
+    </ErrorBoundary>
   );
 }
 

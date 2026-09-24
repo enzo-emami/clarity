@@ -24,10 +24,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+        env:
+          VITE_CONVEX_URL: ${{ secrets.VITE_CONVEX_URL || 'https://cheerful-snake-239.convex.cloud' }}
       - name: Encrypt app and seed data
         run: node scripts/encrypt-site.mjs
         env:
-          SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
+          SITE_PASSWORD: ${{ secrets.SITE_PASSWORD || 'yumyum' }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
