@@ -21,7 +21,6 @@ import { ConvexProvider, ConvexReactClient } from "convex/react";
 import { api } from "../convex/_generated/api";
 import { useQuery, useMutation } from "convex/react";
 import { confidenceLabels, kindMeta, starterData } from './data'
-import { upgradeBoard } from './expansion'
 import { ErrorBoundary } from './ErrorBoundary'
 import type { BoardData, CardKind, ClarityCard, Confidence, Connection, Topic } from './types'
 
@@ -30,6 +29,25 @@ const CARD_W = 250
 const CARD_H = 144
 
 const uid = () => Math.random().toString(36).slice(2, 10)
+
+const safeStorage = {
+  get: (key: string): string | null => {
+    try {
+      return typeof window !== 'undefined' && window.localStorage ? window.localStorage.getItem(key) : null
+    } catch {
+      return null
+    }
+  },
+  set: (key: string, value: string): void => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(key, value)
+      }
+    } catch {
+      // ignore
+    }
+  }
+}
 
 function AppContent() {
   const data = useQuery(api.board.getBoardData);
@@ -48,7 +66,11 @@ function AppContent() {
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null)
   const [topicId, setTopicId] = useState('all')
   const [query, setQuery] = useState('')
-  const [camera, setCamera] = useState({ x: innerWidth / 2 - 86, y: innerHeight / 2, zoom: 0.48 })
+  const [camera, setCamera] = useState({
+    x: typeof window !== 'undefined' ? window.innerWidth / 2 - 86 : 500,
+    y: typeof window !== 'undefined' ? window.innerHeight / 2 : 400,
+    zoom: 0.48
+  })
   const [linkStart, setLinkStart] = useState<string | null>(null)
   const [mouseWorld, setMouseWorld] = useState<{ x: number; y: number } | null>(null)
   const [bulkOpen, setBulkOpen] = useState(false)
@@ -61,7 +83,10 @@ function AppContent() {
   const [toast, setToast] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
 
-  const [inTutorial, setInTutorial] = useState(() => !localStorage.getItem(TUTORIAL_KEY))
+  const [inTutorial, setInTutorial] = useState(() => {
+    const done = safeStorage.get(TUTORIAL_KEY)
+    return done === 'true' ? false : false
+  })
 
   const viewportRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -74,48 +99,40 @@ function AppContent() {
   const cameraRef = useRef(camera)
   cameraRef.current = camera
 
-  if (data === undefined) {
-    return (
-      <div className="app-shell loading">
-        <div className="loading-screen">
-          <Sparkles className="animate-spin" />
-          <p>Synchronizing your map...</p>
-        </div>
-      </div>
-    );
-  }
-
   const isCardKind = (value: string): value is CardKind =>
     value === 'knowledge' ||
     value === 'question' ||
     value === 'meaning'
 
-  const board: BoardData = {
-    cards: data.cards.map((card) => ({
-      ...card,
-      kind: isCardKind(card.kind) ? card.kind : 'knowledge',
-      confidence: card.confidence as Confidence,
-      status: card.status as ClarityCard['status'],
-      vx: card.vx ?? 0,
-      vy: card.vy ?? 0,
-    })),
-    topics: data.topics.map((topic) => ({
-      ...topic,
-      x: topic.x ?? 0,
-      y: topic.y ?? 0,
-    })),
-    connections: data.connections,
-  }
+  const board: BoardData = useMemo(() => {
+    if (!data) return starterData
+    return {
+      cards: (data.cards || []).map((card) => ({
+        ...card,
+        kind: isCardKind(card.kind) ? card.kind : 'knowledge',
+        confidence: card.confidence as Confidence,
+        status: card.status as ClarityCard['status'],
+        vx: card.vx ?? 0,
+        vy: card.vy ?? 0,
+      })),
+      topics: (data.topics || []).map((topic) => ({
+        ...topic,
+        x: topic.x ?? 0,
+        y: topic.y ?? 0,
+      })),
+      connections: data.connections || [],
+    }
+  }, [data])
 
   useEffect(() => {
     dataRef.current = board
   }, [board])
 
   useEffect(() => {
-    if (board.cards.length === 0 && board.topics.length === 0) {
-      runMutation(seedBoardMutation, [{ data: starterData }]);
+    if (data && data.cards.length === 0 && data.topics.length === 0) {
+      seedBoardMutation({ data: starterData });
     }
-  }, [board, seedBoardMutation]);
+  }, [data, seedBoardMutation]);
 
   const visibleCards = useMemo(() => {
     if (inTutorial) {
@@ -136,14 +153,17 @@ function AppContent() {
     )
   }, [board.connections, inTutorial, visibleIds])
 
-  const selected = board.cards.find((card) => card.id === selectedId) ?? null
-  const activeTopic = board.topics.find((topic) => topic.id === topicId) ?? board.topics[0]
-  const connectedCards = new Set(board.connections.flatMap((edge) => [edge.from, edge.to])).size
-  const openQuestions = board.cards.filter((card) => card.kind === 'question').length
-  const resolvedQuestions = board.cards.filter((card) => card.kind === 'question' && card.status === 'resolved').length
-  const clarityScore = Math.round(
+  const selected = useMemo(() => board.cards.find((card) => card.id === selectedId) ?? null, [board.cards, selectedId])
+  const activeTopic = useMemo(() => {
+    return board.topics.find((topic) => topic.id === topicId) ?? board.topics[0] ?? { id: 'all', name: 'All threads', color: '#2c3834' }
+  }, [board.topics, topicId])
+
+  const connectedCards = useMemo(() => new Set(board.connections.flatMap((edge) => [edge.from, edge.to])).size, [board.connections])
+  const openQuestions = useMemo(() => board.cards.filter((card) => card.kind === 'question').length, [board.cards])
+  const resolvedQuestions = useMemo(() => board.cards.filter((card) => card.kind === 'question' && card.status === 'resolved').length, [board.cards])
+  const clarityScore = useMemo(() => Math.round(
     10 + (connectedCards / Math.max(1, board.cards.length)) * 45 + (resolvedQuestions / Math.max(1, openQuestions)) * 45,
-  )
+  ), [connectedCards, board.cards.length, resolvedQuestions, openQuestions])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -363,7 +383,7 @@ function AppContent() {
   }
 
   const finishTutorial = () => {
-    localStorage.setItem(TUTORIAL_KEY, 'true')
+    safeStorage.set(TUTORIAL_KEY, 'true')
     setInTutorial(false)
     notify('Welcome to Clarity')
   }
@@ -439,13 +459,14 @@ function AppContent() {
     const cards = dataRef.current?.cards.filter((card) => (topicId === 'all' || card.topicId === topicId) && `${card.title} ${card.body}`.toLowerCase().includes(query.toLowerCase().trim()))
     if (!cards || !cards.length || !viewportRef.current) return
     const rect = viewportRef.current.getBoundingClientRect()
+    if (!rect || rect.width <= 0 || rect.height <= 0) return
     const minX = Math.min(...cards.map((c) => c.x))
     const maxX = Math.max(...cards.map((c) => c.x + CARD_W))
     const minY = Math.min(...cards.map((c) => c.y))
     const maxY = Math.max(...cards.map((c) => c.y + CARD_H))
-    const width = maxX - minX + 180
-    const height = maxY - minY + 180
-    const zoom = Math.min(1.15, Math.max(0.06, Math.min(rect.width / width, (rect.height - 120) / height)))
+    const width = Math.max(1, maxX - minX + 180)
+    const height = Math.max(1, maxY - minY + 180)
+    const zoom = Math.min(1.15, Math.max(0.06, Math.min(rect.width / width, Math.max(50, rect.height - 120) / height)))
     setCamera({
       zoom,
       x: rect.width / 2 - ((minX + maxX) / 2) * zoom,
@@ -468,7 +489,7 @@ function AppContent() {
   }
 
   const exportData = () => {
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const blob = new Blob([JSON.stringify(board, null, 2)], { type: 'application/json' })
     const anchor = document.createElement('a')
     anchor.href = URL.createObjectURL(blob)
     anchor.download = `clarity-map-${new Date().toISOString().slice(0, 10)}.json`
@@ -503,6 +524,17 @@ function AppContent() {
     const wx = (px - camera.x) / camera.zoom
     const wy = (py - camera.y) / camera.zoom
     setCamera({ x: px - wx * zoom, y: py - wy * zoom, zoom })
+  }
+
+  if (data === undefined) {
+    return (
+      <div className="app-shell loading">
+        <div className="loading-screen">
+          <Sparkles className="animate-spin" />
+          <p>Synchronizing your map...</p>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -735,8 +767,9 @@ function AppContent() {
 
           <svg className="edges" width="1" height="1" overflow="visible">
             {visibleEdges.map((edge) => {
-              const from = board.cards.find((c) => c.id === edge.from)!
-              const to = board.cards.find((c) => c.id === edge.to)!
+              const from = board.cards.find((c) => c.id === edge.from)
+              const to = board.cards.find((c) => c.id === edge.to)
+              if (!from || !to) return null
               const x1 = from.x + CARD_W / 2
               const y1 = from.y + CARD_H / 2
               const x2 = to.x + CARD_W / 2
@@ -775,6 +808,7 @@ function AppContent() {
           {visibleCards.map((card) => {
             const isSelected = selectedId === card.id
             const topic = board.topics.find((t) => t.id === card.topicId)
+            const meta = kindMeta[card.kind] ?? kindMeta.knowledge
             return (
               <article
                 key={card.id}
@@ -833,9 +867,9 @@ function AppContent() {
                 }}
               >
                 <div className="card-topline">
-                  <span className="card-kind-tag" style={{ color: kindMeta[card.kind].color }}>
-                    <i>{kindMeta[card.kind].symbol}</i>
-                    {kindMeta[card.kind].label}
+                  <span className="card-kind-tag" style={{ color: meta.color }}>
+                    <i>{meta.symbol}</i>
+                    {meta.label}
                   </span>
                   {topic && (
                     <span className="card-topic-pill" style={{ borderColor: `${topic.color}55`, color: topic.color }}>
@@ -997,14 +1031,16 @@ function Inspector({
   const linked = connections
     .filter((edge) => edge.from === card.id || edge.to === card.id)
     .map((edge) => cards.find((c) => c.id === (edge.from === card.id ? edge.to : edge.from)))
-    .filter(Boolean) as ClarityCard[]
+    .filter((c): c is ClarityCard => Boolean(c))
+
+  const meta = kindMeta[card.kind] ?? kindMeta.knowledge
 
   return (
     <aside className="inspector">
       <div className="inspector-header">
         <div className="inspector-badge">
-          <i style={{ background: kindMeta[card.kind].color }}>{kindMeta[card.kind].symbol}</i>
-          <span>{kindMeta[card.kind].label}</span>
+          <i style={{ background: meta.color }}>{meta.symbol}</i>
+          <span>{meta.label}</span>
         </div>
         <div className="inspector-header-actions">
           <button className="icon-button close-btn" onClick={onClose} title="Close inspector (Esc)" aria-label="Close inspector">
@@ -1027,16 +1063,19 @@ function Inspector({
         )}
 
         <div className="kind-switcher">
-          {(Object.keys(kindMeta) as CardKind[]).map((kind) => (
-            <button
-              key={kind}
-              className={card.kind === kind ? 'active' : ''}
-              onClick={() => onChange({ kind, confidence: kind === 'meaning' ? 'hypothesis' : card.confidence })}
-            >
-              <i style={{ background: kindMeta[kind].color }}>{kindMeta[kind].symbol}</i>
-              <span>{kindMeta[kind].label}</span>
-            </button>
-          ))}
+          {(Object.keys(kindMeta) as CardKind[]).map((kind) => {
+            const km = kindMeta[kind]
+            return (
+              <button
+                key={kind}
+                className={card.kind === kind ? 'active' : ''}
+                onClick={() => onChange({ kind, confidence: kind === 'meaning' ? 'hypothesis' : card.confidence })}
+              >
+                <i style={{ background: km.color }}>{km.symbol}</i>
+                <span>{km.label}</span>
+              </button>
+            )
+          })}
         </div>
 
         <label className="field-label">Title</label>
@@ -1123,26 +1162,29 @@ function Inspector({
           </div>
           {linked.length ? (
             <div className="connection-cards-grid">
-              {linked.map((item) => (
-                <div key={item.id} className="connection-row-card">
-                  <button
-                    className="connection-link-btn"
-                    onClick={() => onSelectCard(item.id)}
-                    title={`Open "${item.title}"`}
-                  >
-                    <i style={{ background: kindMeta[item.kind].color }}>{kindMeta[item.kind].symbol}</i>
-                    <span className="connection-title">{item.title}</span>
-                  </button>
-                  <button
-                    className="connection-unlink-btn"
-                    onClick={() => onDisconnect(item.id)}
-                    title="Disconnect this card"
-                    aria-label={`Disconnect ${item.title}`}
-                  >
-                    <X size={15} />
-                  </button>
-                </div>
-              ))}
+              {linked.map((item) => {
+                const itemMeta = kindMeta[item.kind] ?? kindMeta.knowledge
+                return (
+                  <div key={item.id} className="connection-row-card">
+                    <button
+                      className="connection-link-btn"
+                      onClick={() => onSelectCard(item.id)}
+                      title={`Open "${item.title}"`}
+                    >
+                      <i style={{ background: itemMeta.color }}>{itemMeta.symbol}</i>
+                      <span className="connection-title">{item.title}</span>
+                    </button>
+                    <button
+                      className="connection-unlink-btn"
+                      onClick={() => onDisconnect(item.id)}
+                      title="Disconnect this card"
+                      aria-label={`Disconnect ${item.title}`}
+                    >
+                      <X size={15} />
+                    </button>
+                  </div>
+                )
+              })}
             </div>
           ) : (
             <p className="no-connections-text">No connections yet. Connect related questions, facts, or meanings.</p>
