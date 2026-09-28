@@ -23,6 +23,12 @@ export const updateCard = mutation({
     if (!card) {
       throw new Error("This card was deleted by another editor.");
     }
+    if (args.updates.imageDisplayWidth !== undefined) {
+      const width = args.updates.imageDisplayWidth;
+      if (!card.imageStorageId || typeof width !== 'number' || !Number.isFinite(width) || width <= 0 || width > 4096) {
+        throw new Error("Invalid image size");
+      }
+    }
     await ctx.db.patch(card._id, args.updates);
   },
 });
@@ -216,8 +222,9 @@ export const generateUploadUrl = mutation({
 });
 
 export const addImage = mutation({
-  args: { id: v.string(), storageId: v.id("_storage"), title: v.string(), topicId: v.string(), x: v.number(), y: v.number() },
+  args: { id: v.string(), storageId: v.id("_storage"), title: v.string(), topicId: v.string(), x: v.number(), y: v.number(), imageWidth: v.optional(v.number()), imageHeight: v.optional(v.number()) },
   handler: async (ctx, args) => {
+    if (args.imageWidth !== undefined || args.imageHeight !== undefined) validateImageDimensions(args.imageWidth, args.imageHeight);
     const file = await ctx.db.system.get(args.storageId);
     if (!file || !['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif'].includes(file.contentType ?? '') || file.size > 10 * 1024 * 1024) {
       throw new Error("Choose a PNG, JPEG, WebP, GIF or AVIF image up to 10 MB.");
@@ -225,7 +232,26 @@ export const addImage = mutation({
     await ctx.db.insert("cards", {
       id: args.id, title: args.title, topicId: args.topicId, x: args.x, y: args.y,
       imageStorageId: args.storageId, body: '', source: '', kind: 'knowledge',
+      imageWidth: args.imageWidth, imageHeight: args.imageHeight,
       confidence: 'first-hand', status: 'open', updatedAt: Date.now(),
     });
+  },
+});
+
+function validateImageDimensions(width: number | undefined, height: number | undefined) {
+  if (!width || !height || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 || width > 100000 || height > 100000) {
+    throw new Error("Invalid image dimensions");
+  }
+}
+
+// Existing images learn their dimensions on load. Concurrent viewers cannot
+// replace known dimensions or reset a size another viewer has already chosen.
+export const setImageDimensions = mutation({
+  args: { id: v.string(), imageWidth: v.number(), imageHeight: v.number() },
+  handler: async (ctx, args) => {
+    validateImageDimensions(args.imageWidth, args.imageHeight);
+    const card = await ctx.db.query("cards").withIndex("idx_id", q => q.eq("id", args.id)).first();
+    if (!card?.imageStorageId || (card.imageWidth && card.imageHeight)) return;
+    await ctx.db.patch(card._id, { imageWidth: args.imageWidth, imageHeight: args.imageHeight });
   },
 });

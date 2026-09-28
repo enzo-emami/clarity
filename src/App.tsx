@@ -25,12 +25,12 @@ import { ErrorBoundary } from './ErrorBoundary'
 import { Spaces } from './Spaces'
 import { GRID, snap, contrastText, freePosition } from './mapUtils'
 import { useCardDrafts } from './useCardDrafts'
+import { CARD_W, CARD_H, cardSize, imageRatio, readImageDimensions, resizeImage } from './cardGeometry'
+import type { ResizeCorner } from './cardGeometry'
 import type { Id } from '../convex/_generated/dataModel'
 import type { BoardData, CardKind, ClarityCard, Confidence, Connection, Topic } from './types'
 
 const TUTORIAL_KEY = 'clarity_tutorial_done_v1'
-const CARD_W = 250
-const CARD_H = 144
 
 const uid = () => Math.random().toString(36).slice(2, 10)
 
@@ -73,8 +73,11 @@ function AppContent() {
   })
   const generateUploadUrl = useMutation(api.board.generateUploadUrl)
   const addImageMutation = useMutation(api.board.addImage)
+  const setImageDimensionsMutation = useMutation(api.board.setImageDimensions)
   const edits = useCardDrafts(updateCardMutation)
   const [dragPosition, setDragPosition] = useState<{ id: string; x: number; y: number } | null>(null)
+  const [resizePosition, setResizePosition] = useState<{ id: string; x: number; y: number; imageDisplayWidth: number } | null>(null)
+  const [loadedImageSizes, setLoadedImageSizes] = useState<Record<string, { imageWidth: number; imageHeight: number }>>({})
   const [uploading, setUploading] = useState(false)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const linkGesture = useRef<string | null>(null)
@@ -112,6 +115,11 @@ function AppContent() {
   const searchInputRef = useRef<HTMLInputElement>(null)
   const cardClickRef = useRef<{ id: string; startX: number; startY: number; moved: boolean } | null>(null)
   const dragging = useRef<{ id: string; dx: number; dy: number; x: number; y: number } | null>(null)
+  const resizing = useRef<{
+    id: string; pointerId: number; corner: ResizeCorner; startX: number; startY: number; zoom: number; ratio: number
+    initial: { x: number; y: number; width: number; height: number }
+    current: { x: number; y: number; width: number; height: number }
+  } | null>(null)
   const panning = useRef<{ sx: number; sy: number; cx: number; cy: number } | null>(null)
 
   const dataRef = useRef<BoardData | undefined>(undefined)
@@ -130,8 +138,10 @@ function AppContent() {
     return {
       cards: (data.cards || []).map((card) => ({
         ...card,
+        ...(!(card.imageWidth && card.imageHeight) ? loadedImageSizes[card.id] : {}),
         ...edits.drafts[card.id]?.patch,
         ...(dragPosition?.id === card.id ? { x: dragPosition.x, y: dragPosition.y } : {}),
+        ...(resizePosition?.id === card.id ? { x: resizePosition.x, y: resizePosition.y, imageDisplayWidth: resizePosition.imageDisplayWidth } : {}),
         kind: isCardKind(card.kind) ? card.kind : 'knowledge',
         confidence: card.confidence as Confidence,
         status: card.status as ClarityCard['status'],
@@ -144,7 +154,7 @@ function AppContent() {
       connections: data.connections || [],
       folders: data.folders || [],
     }
-  }, [data, edits.drafts, dragPosition])
+  }, [data, edits.drafts, dragPosition, resizePosition, loadedImageSizes])
 
   useEffect(() => {
     dataRef.current = board
@@ -195,6 +205,8 @@ function AppContent() {
       } else if (e.key === 'Escape') {
         linkGesture.current = null
         dragging.current = null
+        resizing.current = null
+        setResizePosition(null)
         cardClickRef.current = null
         panning.current = null
         setDragPosition(null)
@@ -226,8 +238,9 @@ function AppContent() {
     const targetCenterX = availWidth / 2
     const targetCenterY = rect.height / 2
     const currentZoom = cameraRef.current.zoom
-    const cardMidX = c.x + CARD_W / 2
-    const cardMidY = c.y + CARD_H / 2
+    const size = cardSize(c)
+    const cardMidX = c.x + size.width / 2
+    const cardMidY = c.y + size.height / 2
     setCamera((cam) => ({
       ...cam,
       x: targetCenterX - cardMidX * currentZoom,
@@ -243,6 +256,17 @@ function AppContent() {
     let frame = 0
     const onMove = (event: PointerEvent) => {
       const cam = cameraRef.current
+      const resize = resizing.current
+      if (resize) {
+        if (event.pointerId !== resize.pointerId) return
+        resize.current = resizeImage(resize.initial, resize.ratio, resize.corner,
+          (event.clientX - resize.startX) / resize.zoom, (event.clientY - resize.startY) / resize.zoom)
+        if (!frame) frame = requestAnimationFrame(() => {
+          frame = 0
+          if (resizing.current) setResizePosition({ id: resize.id, x: resize.current.x, y: resize.current.y, imageDisplayWidth: resize.current.width })
+        })
+        return
+      }
       if (linkStartRef.current && viewportRef.current) {
         const rect = viewportRef.current.getBoundingClientRect()
         setMouseWorld({
@@ -278,8 +302,15 @@ function AppContent() {
       }
     }
     const onUp = (event: Event) => {
+      if (resizing.current && event instanceof PointerEvent && event.pointerId !== resizing.current.pointerId) return
       cancelAnimationFrame(frame); frame = 0
       const cancelled = event.type === 'pointercancel' || event.type === 'blur'
+      const resize = resizing.current
+      if (resize && !cancelled && Math.abs(resize.current.width - resize.initial.width) > 0.001) {
+        edits.edit(resize.id, { imageDisplayWidth: resize.current.width, x: resize.current.x, y: resize.current.y }, true)
+      }
+      resizing.current = null
+      setResizePosition(null)
       if (linkGesture.current) {
         const from = linkGesture.current
         linkGesture.current = null
@@ -348,7 +379,7 @@ function AppContent() {
     const cam = cameraRef.current
     const rect = viewportRef.current!.getBoundingClientRect()
     const position = freePosition((rect.width / 2 - cam.x) / cam.zoom - CARD_W / 2, (rect.height / 2 - cam.y) / cam.zoom - CARD_H / 2,
-      board.cards.filter(c => topicId === 'all' || c.topicId === topicId))
+      board.cards.filter(c => topicId === 'all' || c.topicId === topicId).map(c => ({ ...c, ...cardSize(c) })))
     const targetX = posX ?? position.x
     const targetY = posY ?? position.y
     const next: ClarityCard = {
@@ -476,9 +507,9 @@ function AppContent() {
     const rect = viewportRef.current.getBoundingClientRect()
     if (!rect || rect.width <= 0 || rect.height <= 0) return
     const minX = Math.min(...cards.map((c) => c.x))
-    const maxX = Math.max(...cards.map((c) => c.x + CARD_W))
+    const maxX = Math.max(...cards.map((c) => c.x + cardSize(c).width))
     const minY = Math.min(...cards.map((c) => c.y))
-    const maxY = Math.max(...cards.map((c) => c.y + CARD_H))
+    const maxY = Math.max(...cards.map((c) => c.y + cardSize(c).height))
     const width = Math.max(1, maxX - minX + 180)
     const height = Math.max(1, maxY - minY + 180)
     const zoom = Math.min(1.15, Math.max(0.06, Math.min(rect.width / width, Math.max(50, rect.height - 120) / height)))
@@ -534,6 +565,7 @@ function AppContent() {
     if (!viewport) return
     const onWheel = (event: WheelEvent) => {
       event.preventDefault()
+      if (resizing.current) return
       const cam = cameraRef.current
       const zoom = Math.min(1.8, Math.max(0.06, cam.zoom * Math.exp(-event.deltaY * 0.001)))
       const rect = viewport.getBoundingClientRect()
@@ -551,20 +583,22 @@ function AppContent() {
       const rect = viewportRef.current?.getBoundingClientRect()
       if (!rect) return
       const cam = cameraRef.current
-      const occupied: { x: number; y: number }[] = [...(dataRef.current?.cards ?? []).filter(c => topicId === 'all' || c.topicId === topicId)]
+      const occupied = (dataRef.current?.cards ?? []).filter(c => topicId === 'all' || c.topicId === topicId).map(c => ({ x: c.x, y: c.y, ...cardSize(c) }))
       for (const [index, file] of files.entries()) {
         if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif'].includes(file.type) || file.size > 10 * 1024 * 1024) {
           throw new Error('Choose a PNG, JPEG, WebP, GIF or AVIF image up to 10 MB.')
         }
+        const dimensions = await readImageDimensions(file)
+        const size = cardSize({ imageStorageId: 'new', ...dimensions })
         const uploadUrl = await generateUploadUrl({})
         const response = await fetch(uploadUrl, { method: 'POST', headers: { 'Content-Type': file.type }, body: file })
         if (!response.ok) throw new Error('Image upload failed. Please try again.')
         const { storageId } = await response.json() as { storageId: Id<'_storage'> }
-        const position = freePosition((rect.width / 2 - cam.x) / cam.zoom - CARD_W / 2 + index * GRID * 2,
-          (rect.height / 2 - cam.y) / cam.zoom - CARD_H / 2 + index * GRID * 2, occupied)
+        const position = freePosition((rect.width / 2 - cam.x) / cam.zoom - size.width / 2 + index * GRID * 2,
+          (rect.height / 2 - cam.y) / cam.zoom - size.height / 2 + index * GRID * 2, occupied, size)
         await addImageMutation({ id: uid(), storageId, title: file.name.replace(/\.[^.]+$/, '') || 'Pasted image', topicId: topicId === 'all' ? 'story' : topicId,
-          ...position })
-        occupied.push(position)
+          ...position, ...dimensions })
+        occupied.push({ ...position, ...size })
       }
       setToast(`${files.length} image${files.length === 1 ? '' : 's'} added`)
     } catch (error) {
@@ -811,10 +845,10 @@ function AppContent() {
               const from = board.cards.find((c) => c.id === edge.from)
               const to = board.cards.find((c) => c.id === edge.to)
               if (!from || !to) return null
-              const x1 = from.x + CARD_W / 2
-              const y1 = from.y + CARD_H / 2
-              const x2 = to.x + CARD_W / 2
-              const y2 = to.y + CARD_H / 2
+              const x1 = from.x + cardSize(from).width / 2
+              const y1 = from.y + cardSize(from).height / 2
+              const x2 = to.x + cardSize(to).width / 2
+              const y2 = to.y + cardSize(to).height / 2
               const cx = (x1 + x2) / 2
               return (
                 <path
@@ -829,8 +863,8 @@ function AppContent() {
             {linkStart && mouseWorld && (() => {
               const src = board.cards.find((c) => c.id === linkStart)
               if (!src) return null
-              const x1 = src.x + CARD_W / 2
-              const y1 = src.y + CARD_H / 2
+              const x1 = src.x + cardSize(src).width / 2
+              const y1 = src.y + cardSize(src).height / 2
               const x2 = mouseWorld.x
               const y2 = mouseWorld.y
               const cx = (x1 + x2) / 2
@@ -850,6 +884,7 @@ function AppContent() {
             const isSelected = selectedId === card.id
             const topic = board.topics.find((t) => t.id === card.topicId)
             const meta = kindMeta[card.kind] ?? kindMeta.knowledge
+            const size = cardSize(card)
             return (
               <article
                 key={card.id}
@@ -857,10 +892,11 @@ function AppContent() {
                 tabIndex={0}
                 aria-label={card.title}
                 onKeyDown={event => { if (event.key === 'Enter') { setSelectedId(card.id); centerCardInView(card.id) } }}
-                className={`map-card ${card.color ? 'custom-color' : ''} ${card.imageStorageId ? 'image-card' : ''} ${dragPosition?.id === card.id ? 'dragging' : ''} ${isSelected ? 'selected' : ''} ${linkStart && linkStart !== card.id ? 'wire-target' : ''}`}
+                className={`map-card ${card.color ? 'custom-color' : ''} ${card.imageStorageId ? 'image-card' : ''} ${resizePosition?.id === card.id ? 'resizing' : ''} ${dragPosition?.id === card.id ? 'dragging' : ''} ${isSelected ? 'selected' : ''} ${linkStart && linkStart !== card.id ? 'wire-target' : ''}`}
                 style={{
                   transform: `translate(${card.x}px, ${card.y}px)`,
-                  width: CARD_W,
+                  width: size.width,
+                  height: size.height,
                   backgroundColor: card.color || undefined,
                   color: card.color ? contrastText(card.color) : undefined,
                 }}
@@ -872,7 +908,7 @@ function AppContent() {
                     event.preventDefault()
                     linkGesture.current = card.id
                     setLinkStart(card.id)
-                    setMouseWorld({ x: card.x + CARD_W / 2, y: card.y + CARD_H / 2 })
+                    setMouseWorld({ x: card.x + size.width / 2, y: card.y + size.height / 2 })
                     setCanvasMenu(null)
                     return
                   }
@@ -922,8 +958,42 @@ function AppContent() {
                 }}
               >
                 {card.imageStorageId ? <>
-                  {card.imageUrl ? <img className="map-image" src={card.imageUrl} alt={card.title} draggable={false}/> : <div className="image-missing">Image unavailable</div>}
+                  {card.imageUrl ? <img className="map-image" src={card.imageUrl} alt={card.title} draggable={false}
+                    onLoad={event => {
+                      if (card.imageWidth && card.imageHeight) return
+                      const dimensions = { imageWidth: event.currentTarget.naturalWidth, imageHeight: event.currentTarget.naturalHeight }
+                      if (!dimensions.imageWidth || !dimensions.imageHeight) return
+                      setLoadedImageSizes(old => ({ ...old, [card.id]: dimensions }))
+                      void setImageDimensionsMutation({ id: card.id, ...dimensions }).catch(() => setToast('Photo dimensions could not be saved. Reload to retry.'))
+                    }}/> : <div className="image-missing">Image unavailable</div>}
                   <h3 className="card-title image-name">{card.title}</h3>
+                  {(['nw', 'ne', 'sw', 'se'] as const).map(corner => <button
+                    key={corner} className={`image-resize-handle resize-${corner}`}
+                    aria-label={`Resize image from ${{ nw: 'top left', ne: 'top right', sw: 'bottom left', se: 'bottom right' }[corner]}`}
+                    style={{ width: 18 / camera.zoom, height: 18 / camera.zoom, borderWidth: 1 / camera.zoom, borderRadius: 4 / camera.zoom }}
+                    title="Drag to resize photo · arrow keys also resize"
+                    onClick={event => event.stopPropagation()}
+                    onPointerDown={event => {
+                      event.stopPropagation()
+                      if (event.button !== 0 || !card.imageWidth || !card.imageHeight) return
+                      event.preventDefault()
+                      const bounds = { x: card.x, y: card.y, ...size }
+                      resizing.current = { id: card.id, pointerId: event.pointerId, corner, startX: event.clientX, startY: event.clientY,
+                        zoom: cameraRef.current.zoom, ratio: imageRatio(card), initial: bounds, current: bounds }
+                      dragging.current = null; cardClickRef.current = null; panning.current = null
+                      setResizePosition({ id: card.id, x: card.x, y: card.y, imageDisplayWidth: size.width })
+                      event.currentTarget.setPointerCapture(event.pointerId)
+                    }}
+                    onKeyDown={event => {
+                      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return
+                      event.preventDefault(); event.stopPropagation()
+                      const step = event.shiftKey ? GRID * 4 : GRID
+                      const dx = event.key === 'ArrowRight' ? step : event.key === 'ArrowLeft' ? -step : 0
+                      const dy = event.key === 'ArrowDown' ? step : event.key === 'ArrowUp' ? -step : 0
+                      const next = resizeImage({ x: card.x, y: card.y, ...size }, imageRatio(card), corner, dx, dy)
+                      edits.edit(card.id, { x: next.x, y: next.y, imageDisplayWidth: next.width }, true)
+                    }}
+                  />)}
                 </> : <><div className="card-topline">
                   <span className="card-kind-tag" style={{ color: meta.color }}>
                     <i>{meta.symbol}</i>
@@ -947,7 +1017,7 @@ function AppContent() {
               </article>
             )
           })}
-          {dragPosition && <div className="snap-preview" style={{ width: CARD_W, height: CARD_H, transform: `translate(${snap(dragPosition.x)}px, ${snap(dragPosition.y)}px)` }}/>}
+          {dragPosition && <div className="snap-preview" style={{ ...cardSize(board.cards.find(c => c.id === dragPosition.id) ?? {}), transform: `translate(${snap(dragPosition.x)}px, ${snap(dragPosition.y)}px)` }}/>}
         </div>
       </section>
 

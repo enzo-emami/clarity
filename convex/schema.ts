@@ -30,6 +30,9 @@ export default defineSchema({
     updatedAt: v.number(),
     color: v.optional(v.string()),
     imageStorageId: v.optional(v.id("_storage")),
+    imageWidth: v.optional(v.number()),
+    imageHeight: v.optional(v.number()),
+    imageDisplayWidth: v.optional(v.number()),
   }).index("idx_id", ["id"]),
 
   connections: defineTable({

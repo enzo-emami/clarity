@@ -240,10 +240,19 @@ button { color: inherit; }
 .map-card .card-title { flex-shrink: 0; }
 .map-card .card-foot { margin-top: auto; padding-top: 4px; }
 .map-card > .card-body-preview { flex: 1; min-height: 0; }
-.map-card.image-card { padding: 7px; }
-.map-image { display: block; width: 100%; height: 101px; object-fit: contain; border-radius: 7px; background: rgba(128,128,128,.1); pointer-events: none; }
-.image-name { margin: 6px 4px 0; font: 600 12px/1.4 'Manrope', sans-serif; white-space: nowrap; text-overflow: ellipsis; display: block; }
-.image-missing { height: 101px; display: grid; place-items: center; font-size: 12px; }
+.map-card.image-card { padding: 0; border: 0; overflow: visible; border-radius: 10px; }
+.image-card::before { display: none; }
+.map-image { display: block; width: 100%; height: calc(100% - 32px); object-fit: contain; border-radius: 10px 10px 0 0; background: rgba(128,128,128,.1); pointer-events: none; }
+.image-card .image-name { margin: 0; height: 32px; padding: 7px 12px; font: 600 12px/18px 'Manrope', sans-serif; white-space: nowrap; text-overflow: ellipsis; display: block; }
+.image-missing { height: calc(100% - 32px); display: grid; place-items: center; font-size: 12px; }
+.image-resize-handle { position: absolute; z-index: 9; padding: 0; border: 1px solid #33564e; background: #fffdf8; opacity: 0; touch-action: none; }
+.image-card:hover .image-resize-handle, .image-card:focus-within .image-resize-handle, .image-card.selected .image-resize-handle, .image-card.resizing .image-resize-handle, .image-resize-handle.resize-se { opacity: 1; }
+.image-resize-handle:focus-visible { outline: 3px solid #7cbfac; outline-offset: 3px; }
+.resize-nw { left: 0; top: 0; transform: translate(-50%, -50%); cursor: nwse-resize; }
+.resize-ne { right: 0; top: 0; transform: translate(50%, -50%); cursor: nesw-resize; }
+.resize-sw { left: 0; bottom: 0; transform: translate(-50%, 50%); cursor: nesw-resize; }
+.resize-se { right: 0; bottom: 0; transform: translate(50%, 50%); cursor: nwse-resize; }
+.map-card.resizing { z-index: 8; transition: none; box-shadow: 0 0 0 2px #557b72, 0 15px 35px rgba(48,58,54,.18); }
 .inspector-image { width: 100%; max-height: 50vh; object-fit: contain; border-radius: 12px; }
 .card-color-controls { display: flex; align-items: center; gap: 10px; font-size: 12px; }
 input[type=color] { width: 44px; height: 36px; padding: 3px; border: 1px solid #ccc; border-radius: 7px; cursor: pointer; }

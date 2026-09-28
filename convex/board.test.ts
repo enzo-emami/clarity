@@ -59,3 +59,17 @@ test('exported query results can be restored including folder and image metadata
   expect(restored.cards[0].title).toBe('a')
   expect(restored.folders[0].name).toBe('Work')
 })
+
+test('legacy photo dimensions initialize once without resetting a resized image', async () => {
+  const t = convexTest(schema, modules)
+  const storageId = await t.run(ctx => ctx.storage.store(new Blob(['image'], { type: 'image/png' })))
+  // @ts-expect-error Only the test harness permits patching storage system metadata.
+  await t.run(ctx => ctx.db.patch(storageId, { contentType: 'image/png' }))
+  await t.mutation(api.board.addImage, { id: 'photo', storageId, title: 'Legacy', topicId: 'story', x: 0, y: 0 })
+  await t.mutation(api.board.setImageDimensions, { id: 'photo', imageWidth: 1200, imageHeight: 800 })
+  await t.mutation(api.board.updateCard, { id: 'photo', updates: { imageDisplayWidth: 900 } })
+  await t.mutation(api.board.setImageDimensions, { id: 'photo', imageWidth: 600, imageHeight: 400 })
+  expect((await t.query(api.board.getBoardData)).cards[0]).toMatchObject({ imageWidth: 1200, imageHeight: 800, imageDisplayWidth: 900 })
+  await expect(t.mutation(api.board.updateCard, { id: 'photo', updates: { imageDisplayWidth: -1 } })).rejects.toThrow('Invalid image size')
+  await expect(t.mutation(api.board.setImageDimensions, { id: 'photo', imageWidth: 0, imageHeight: 200 })).rejects.toThrow('Invalid image dimensions')
+})

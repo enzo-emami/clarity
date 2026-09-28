@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import { ConvexHttpClient } from 'convex/browser'
 import { api } from '../convex/_generated/api'
 
@@ -155,4 +156,86 @@ test('custom preview colors select legible foregrounds and persist', async ({ pa
   await expect(page.locator('[data-card-id="a"]')).toHaveCSS('color', 'rgb(0, 0, 0)')
   await page.getByRole('button', { name: 'Close inspector' }).click()
   await expect.poll(async () => (await client.query(api.board.getBoardData)).cards.find(c => c.id === 'a')?.color).toBe('#ffff88')
+})
+
+async function photoFile(page: Page, width: number, height: number, name: string) {
+  const base64 = await page.evaluate(({ width, height }) => {
+    const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height
+    const ctx = canvas.getContext('2d')!
+    ctx.fillStyle = '#396c62'; ctx.fillRect(0, 0, width, height)
+    ctx.fillStyle = '#ead0a2'; ctx.fillRect(width / 4, height / 4, width / 2, height / 2)
+    return canvas.toDataURL('image/png').split(',')[1]
+  }, { width, height })
+  return { name, mimeType: 'image/png', buffer: Buffer.from(base64, 'base64') }
+}
+
+test('landscape photo resizes proportionally, syncs only on release and survives reload', async ({ page, context }) => {
+  await page.locator('input[type=file][multiple]').setInputFiles(await photoFile(page, 1200, 600, 'Landscape.png'))
+  const photo = page.locator('.image-card')
+  await expect(photo).toHaveCount(1)
+  await page.getByRole('button', { name: 'Fit all cards in view' }).click()
+  await expect(photo).toHaveCSS('width', '640px')
+  await expect(photo).toHaveCSS('height', '352px')
+  const id = (await photo.getAttribute('data-card-id'))!
+  await client.mutation(api.board.addConnection, { connection: { id: 'photo-edge', from: id, to: 'a' } })
+  const second = await context.newPage(); await second.goto('/')
+  await expect(second.locator('.image-card')).toHaveCSS('width', '640px')
+  const handle = (await photo.locator('.resize-se').boundingBox())!
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2)
+  await page.mouse.down(); await page.mouse.move(handle.x + 120, handle.y + 65, { steps: 12 })
+  await expect(photo).toHaveClass(/resizing/)
+  expect((await client.query(api.board.getBoardData)).cards.find(c => c.id === id)?.imageDisplayWidth).toBeUndefined()
+  await expect(second.locator('.image-card')).toHaveCSS('width', '640px')
+  await page.mouse.up()
+  await expect.poll(async () => (await client.query(api.board.getBoardData)).cards.find(c => c.id === id)?.imageDisplayWidth ?? 0).toBeGreaterThan(640)
+  const saved = (await client.query(api.board.getBoardData)).cards.find(c => c.id === id)!
+  await expect.poll(() => second.locator('.image-card').evaluate(el => parseFloat(getComputedStyle(el).width))).toBeCloseTo(saved.imageDisplayWidth!, 1)
+  const imageBox = (await photo.locator('img').boundingBox())!
+  expect(imageBox.width / imageBox.height).toBeCloseTo(2, 2)
+  const path = await page.locator('.edges > path').getAttribute('d')
+  expect(path).toContain(`M ${saved.x + saved.imageDisplayWidth! / 2} ${saved.y + (saved.imageDisplayWidth! / 2 + 32) / 2}`)
+  await page.reload()
+  await expect.poll(() => page.locator('.image-card').evaluate(el => parseFloat(getComputedStyle(el).width))).toBeCloseTo(saved.imageDisplayWidth!, 1)
+  await page.getByRole('button', { name: 'Fit all cards in view' }).click()
+  const bounds = (await photo.boundingBox())!, canvas = (await page.locator('.canvas').boundingBox())!
+  expect(bounds.x).toBeGreaterThanOrEqual(canvas.x)
+  expect(bounds.y + bounds.height).toBeLessThanOrEqual(canvas.y + canvas.height)
+  await page.screenshot({ path: 'test-results/resizable-photo.png' })
+})
+
+test('portrait photos preserve ratio, opposite-corner anchors and cancelled resize', async ({ page }) => {
+  await page.locator('input[type=file][multiple]').setInputFiles(await photoFile(page, 600, 1200, 'Portrait.png'))
+  const photo = page.locator('.image-card')
+  await expect(photo).toHaveCSS('width', '320px')
+  await expect(photo).toHaveCSS('height', '672px')
+  await page.getByRole('button', { name: 'Fit all cards in view' }).click()
+  const id = (await photo.getAttribute('data-card-id'))!
+  const original = (await client.query(api.board.getBoardData)).cards.find(c => c.id === id)!
+  await photo.hover()
+  const handle = (await photo.locator('.resize-nw').boundingBox())!
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2)
+  await page.mouse.down(); await page.mouse.move(handle.x - 20, handle.y - 40, { steps: 8 }); await page.mouse.up()
+  await expect.poll(async () => (await client.query(api.board.getBoardData)).cards.find(c => c.id === id)?.imageDisplayWidth ?? 0).toBeGreaterThan(320)
+  const saved = (await client.query(api.board.getBoardData)).cards.find(c => c.id === id)!
+  expect(saved.x + saved.imageDisplayWidth!).toBeCloseTo(original.x + 320)
+  expect(saved.y + saved.imageDisplayWidth! * 2 + 32).toBeCloseTo(original.y + 672)
+  const imageBox = (await photo.locator('img').boundingBox())!
+  expect(imageBox.width / imageBox.height).toBeCloseTo(0.5, 2)
+  const nextHandle = (await photo.locator('.resize-se').boundingBox())!
+  await page.mouse.move(nextHandle.x + 9, nextHandle.y + 9); await page.mouse.down()
+  await page.mouse.move(nextHandle.x + 50, nextHandle.y + 50, { steps: 5 })
+  await page.keyboard.press('Escape'); await page.mouse.up()
+  await expect(photo).not.toHaveClass(/resizing/)
+  expect((await client.query(api.board.getBoardData)).cards.find(c => c.id === id)?.imageDisplayWidth).toBe(saved.imageDisplayWidth)
+})
+
+test('previously uploaded photos learn their natural ratio without losing name or position', async ({ page }) => {
+  const file = await photoFile(page, 900, 300, 'Existing.png')
+  const url = await client.mutation(api.board.generateUploadUrl)
+  const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'image/png' }, body: file.buffer })
+  const { storageId } = await response.json()
+  await client.mutation(api.board.addImage, { id: 'legacy', storageId, title: 'Existing photo', topicId: 'story', x: 704, y: 22 })
+  await expect(page.locator('[data-card-id="legacy"]')).toHaveCSS('height', '245.328px')
+  await expect.poll(async () => (await client.query(api.board.getBoardData)).cards.find(c => c.id === 'legacy')?.imageWidth).toBe(900)
+  expect((await client.query(api.board.getBoardData)).cards.find(c => c.id === 'legacy')).toMatchObject({ title: 'Existing photo', x: 704, y: 22, imageWidth: 900, imageHeight: 300 })
 })

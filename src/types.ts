@@ -31,6 +31,11 @@ export type ClarityCard = {
   color?: string
   imageStorageId?: string
   imageUrl?: string | null
+  /** Original dimensions, used to preserve the photo's aspect ratio. */
+  imageWidth?: number
+  imageHeight?: number
+  /** Resizable width on the map; image height is derived from its original ratio. */
+  imageDisplayWidth?: number
 }
 
 export type Connection = {

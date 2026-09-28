@@ -8,6 +8,7 @@ A shared visual map for questions, knowledge, meanings, and image references. Re
 - Drag to move an item. A dashed outline previews its grid position; release to snap and share the final position with other viewers. Escape cancels the drag.
 - Hold the right mouse button on an item, drag to another item, and release to connect. The inspector's **Connect card** button also supports click-to-connect.
 - Use **Add image**, the canvas context menu, or paste an image with Ctrl/Cmd+V while the map is focused. PNG, JPEG, WebP, GIF, and AVIF files up to 10 MB are supported. Images have a name-only editor and support connections.
+- Photos preserve their original proportions and have their own map size. Drag any corner handle to resize; the opposite corner stays anchored and the final size syncs when released. Escape cancels. Focus a handle and use arrow keys for keyboard resizing (Shift for larger steps). Existing photos adapt automatically when loaded.
 - Set any card background color in its inspector. Preview text automatically uses a contrasting foreground.
 - Drag spaces in the sidebar to reorder or move them into folders. Alt+Up/Down also reorders a focused space. Right-click a space for **Add to folder**, or a folder to rename, recolor, or remove it. Removing a folder keeps its spaces and cards.
 

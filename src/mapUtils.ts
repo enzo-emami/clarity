@@ -1,17 +1,19 @@
 export const GRID = 22
 export const snap = (value: number) => Math.round(value / GRID) * GRID
 
-export function freePosition(x: number, y: number, cards: { x: number; y: number }[]) {
+export function freePosition(x: number, y: number, cards: { x: number; y: number; width?: number; height?: number }[], size = { width: 250, height: 144 }) {
   const origin = { x: snap(x), y: snap(y) }
-  const available = (px: number, py: number) => !cards.some(c => Math.abs(c.x - px) < 272 && Math.abs(c.y - py) < 166)
+  const available = (px: number, py: number) => !cards.some(c => px < c.x + (c.width ?? 250) + GRID && px + size.width + GRID > c.x && py < c.y + (c.height ?? 144) + GRID && py + size.height + GRID > c.y)
+  const stepX = Math.ceil((size.width + GRID) / GRID) * GRID
+  const stepY = Math.ceil((size.height + GRID) / GRID) * GRID
   if (available(origin.x, origin.y)) return origin
   for (let ring = 1; ring <= cards.length + 1; ring++) {
     for (let dx = -ring; dx <= ring; dx++) for (const dy of [-ring, ring]) {
-      const next = { x: origin.x + dx * 286, y: origin.y + dy * 176 }
+      const next = { x: origin.x + dx * stepX, y: origin.y + dy * stepY }
       if (available(next.x, next.y)) return next
     }
     for (let dy = -ring + 1; dy < ring; dy++) for (const dx of [-ring, ring]) {
-      const next = { x: origin.x + dx * 286, y: origin.y + dy * 176 }
+      const next = { x: origin.x + dx * stepX, y: origin.y + dy * stepY }
       if (available(next.x, next.y)) return next
     }
   }
