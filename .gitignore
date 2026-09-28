@@ -7,4 +7,6 @@ dist
 vite.config.js
 vite.config.d.ts
 docs/
+test-results/
+playwright-report/
 *.private.*

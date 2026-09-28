@@ -8,7 +8,11 @@ export type Topic = {
   color: string
   x?: number
   y?: number
+  order?: number
+  folderId?: string
 }
+
+export type SpaceFolder = { id: string; name: string; color: string; order: number }
 
 export type ClarityCard = {
   id: string
@@ -24,6 +28,9 @@ export type ClarityCard = {
   vx?: number
   vy?: number
   updatedAt: number
+  color?: string
+  imageStorageId?: string
+  imageUrl?: string | null
 }
 
 export type Connection = {
@@ -37,4 +44,5 @@ export type BoardData = {
   cards: ClarityCard[]
   connections: Connection[]
   topics: Topic[]
+  folders?: SpaceFolder[]
 }

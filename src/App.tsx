@@ -22,6 +22,10 @@ import { api } from "../convex/_generated/api";
 import { useQuery, useMutation } from "convex/react";
 import { confidenceLabels, kindMeta, starterData } from './data'
 import { ErrorBoundary } from './ErrorBoundary'
+import { Spaces } from './Spaces'
+import { GRID, snap, contrastText, freePosition } from './mapUtils'
+import { useCardDrafts } from './useCardDrafts'
+import type { Id } from '../convex/_generated/dataModel'
 import type { BoardData, CardKind, ClarityCard, Confidence, Connection, Topic } from './types'
 
 const TUTORIAL_KEY = 'clarity_tutorial_done_v1'
@@ -61,6 +65,20 @@ function AppContent() {
   const updateTopicMutation = useMutation(api.board.updateTopic);
   const deleteTopicMutation = useMutation(api.board.deleteTopic);
   const seedBoardMutation = useMutation(api.board.seedBoard);
+  const saveFolderMutation = useMutation(api.board.saveFolder)
+  const deleteFolderMutation = useMutation(api.board.deleteFolder)
+  const arrangeSpacesMutation = useMutation(api.board.arrangeSpaces).withOptimisticUpdate((store, args) => {
+    const value = store.getQuery(api.board.getBoardData, {})
+    if (value) store.setQuery(api.board.getBoardData, {}, { ...value, topics: value.topics.map(t => args.ids.includes(t.id) ? { ...t, order: args.ids.indexOf(t.id), folderId: args.folderId } : t) })
+  })
+  const generateUploadUrl = useMutation(api.board.generateUploadUrl)
+  const addImageMutation = useMutation(api.board.addImage)
+  const edits = useCardDrafts(updateCardMutation)
+  const [dragPosition, setDragPosition] = useState<{ id: string; x: number; y: number } | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const imageInputRef = useRef<HTMLInputElement>(null)
+  const linkGesture = useRef<string | null>(null)
+  const linkStartRef = useRef<string | null>(null)
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null)
@@ -82,6 +100,8 @@ function AppContent() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [toast, setToast] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
+  const pendingMutations = useRef(0)
+  const [mutationError, setMutationError] = useState(false)
 
   const [inTutorial, setInTutorial] = useState(() => {
     const done = safeStorage.get(TUTORIAL_KEY)
@@ -91,13 +111,14 @@ function AppContent() {
   const viewportRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const cardClickRef = useRef<{ id: string; startX: number; startY: number; moved: boolean } | null>(null)
-  const dragging = useRef<{ id: string; dx: number; dy: number; lastX: number; lastY: number; time: number; vx: number; vy: number } | null>(null)
+  const dragging = useRef<{ id: string; dx: number; dy: number; x: number; y: number } | null>(null)
   const panning = useRef<{ sx: number; sy: number; cx: number; cy: number } | null>(null)
 
   const dataRef = useRef<BoardData | undefined>(undefined)
 
   const cameraRef = useRef(camera)
   cameraRef.current = camera
+  linkStartRef.current = linkStart
 
   const isCardKind = (value: string): value is CardKind =>
     value === 'knowledge' ||
@@ -109,6 +130,8 @@ function AppContent() {
     return {
       cards: (data.cards || []).map((card) => ({
         ...card,
+        ...edits.drafts[card.id]?.patch,
+        ...(dragPosition?.id === card.id ? { x: dragPosition.x, y: dragPosition.y } : {}),
         kind: isCardKind(card.kind) ? card.kind : 'knowledge',
         confidence: card.confidence as Confidence,
         status: card.status as ClarityCard['status'],
@@ -117,12 +140,11 @@ function AppContent() {
       })),
       topics: (data.topics || []).map((topic) => ({
         ...topic,
-        x: topic.x ?? 0,
-        y: topic.y ?? 0,
       })),
       connections: data.connections || [],
+      folders: data.folders || [],
     }
-  }, [data])
+  }, [data, edits.drafts, dragPosition])
 
   useEffect(() => {
     dataRef.current = board
@@ -171,6 +193,12 @@ function AppContent() {
         e.preventDefault()
         searchInputRef.current?.focus()
       } else if (e.key === 'Escape') {
+        linkGesture.current = null
+        dragging.current = null
+        cardClickRef.current = null
+        panning.current = null
+        setDragPosition(null)
+        edits.flushAll()
         if (canvasMenu) setCanvasMenu(null)
         if (editingTopic) setEditingTopic(null)
         if (editingTitle) setEditingTitle(false)
@@ -187,37 +215,6 @@ function AppContent() {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [canvasMenu, editingTopic, editingTitle, selectedId, selectedEdge, linkStart, bulkOpen, topicsOpen])
-
-  useEffect(() => {
-    let frame = 0
-    let running = true
-    const tick = () => {
-      if (!running) return
-      const current = dataRef.current
-      if (!current) return;
-      if (current.cards.some((card) => card.vx || card.vy)) {
-        const cards = current.cards.map((card) => ({ ...card }))
-        cards.forEach((card) => {
-          if (dragging.current?.id === card.id) {
-            card.vx = 0
-            card.vy = 0
-            return
-          }
-          card.vx = (card.vx ?? 0) * 0.65
-          card.vy = (card.vy ?? 0) * 0.65
-          if (Math.hypot(card.vx, card.vy) < 0.01) { card.vx = 0; card.vy = 0 }
-          card.x += card.vx
-          card.y += card.vy
-        })
-      }
-      frame = requestAnimationFrame(tick)
-    }
-    frame = requestAnimationFrame(tick)
-    return () => {
-      running = false
-      cancelAnimationFrame(frame)
-    }
-  }, [])
 
   const centerCardInView = useCallback((cardId: string) => {
     const c = dataRef.current?.cards.find((item) => item.id === cardId)
@@ -239,9 +236,14 @@ function AppContent() {
   }, [])
 
   useEffect(() => {
+    if (selected?.id) centerCardInView(selected.id)
+  }, [selected?.id, centerCardInView])
+
+  useEffect(() => {
+    let frame = 0
     const onMove = (event: PointerEvent) => {
       const cam = cameraRef.current
-      if (viewportRef.current) {
+      if (linkStartRef.current && viewportRef.current) {
         const rect = viewportRef.current.getBoundingClientRect()
         setMouseWorld({
           x: (event.clientX - rect.left - cam.x) / cam.zoom,
@@ -260,14 +262,12 @@ function AppContent() {
           }
         }
         const drag = dragging.current
-        const elapsed = Math.max(1, performance.now() - drag.time)
-        drag.vx = (event.clientX - drag.lastX) / elapsed
-        drag.vy = (event.clientY - drag.lastY) / elapsed
-        drag.lastX = event.clientX
-        drag.lastY = event.clientY
-        drag.time = performance.now()
-        const { id, dx, dy } = dragging.current
-        updateCardMutation({ id, updates: { x: worldX - dx, y: worldY - dy, vx: 0, vy: 0 } });
+        drag.x = worldX - drag.dx
+        drag.y = worldY - drag.dy
+        if (cardClickRef.current?.moved && !frame) frame = requestAnimationFrame(() => {
+          frame = 0
+          if (dragging.current) setDragPosition({ id: drag.id, x: drag.x, y: drag.y })
+        })
       } else if (panning.current) {
         const pan = panning.current
         setCamera((old) => ({
@@ -277,20 +277,25 @@ function AppContent() {
         }))
       }
     }
-    const onUp = () => {
-      const drag = dragging.current
-      const cam = cameraRef.current
-      if (drag) {
-        const fresh = performance.now() - drag.time < 90
-        const speed = Math.hypot(drag.vx, drag.vy)
-        const scale = fresh ? Math.min(1, 0.8 / Math.max(speed, 0.001)) / cam.zoom : 0
-        updateCardMutation({
-          id: drag.id,
-          updates: { vx: drag.vx * scale, vy: drag.vy * scale }
-        });
+    const onUp = (event: Event) => {
+      cancelAnimationFrame(frame); frame = 0
+      const cancelled = event.type === 'pointercancel' || event.type === 'blur'
+      if (linkGesture.current) {
+        const from = linkGesture.current
+        linkGesture.current = null
+        if (!cancelled && event instanceof PointerEvent) {
+          const to = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-card-id]')?.dataset.cardId
+          if (to && to !== from) void addConnectionMutation({ connection: { id: uid(), from, to } }).catch(() => { setMutationError(true); setToast('Connection could not be saved. Try again.') })
+        }
+        setLinkStart(null); setMouseWorld(null)
       }
+      const drag = dragging.current
+      if (drag && cardClickRef.current?.moved && !cancelled) {
+        edits.edit(drag.id, { x: snap(drag.x), y: snap(drag.y), vx: 0, vy: 0 }, true)
+      }
+      setDragPosition(null)
       if (cardClickRef.current) {
-        if (!cardClickRef.current.moved) {
+        if (!cardClickRef.current.moved && !cancelled) {
           const targetId = cardClickRef.current.id
           setSelectedId(targetId)
           setSelectedEdge(null)
@@ -304,39 +309,48 @@ function AppContent() {
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
     window.addEventListener('pointercancel', onUp)
-    window.addEventListener('mouseup', onUp)
     window.addEventListener('blur', onUp)
     return () => {
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
       window.removeEventListener('pointercancel', onUp)
-      window.removeEventListener('mouseup', onUp)
+      cancelAnimationFrame(frame)
       window.removeEventListener('blur', onUp)
     }
-  }, [centerCardInView, updateCardMutation])
+  }, [centerCardInView, edits.edit, addConnectionMutation])
 
   const notify = (message: string) => {
     setToast(message)
     window.setTimeout(() => setToast(null), 2400)
   }
 
-  const runMutation = async <T extends any[], R>(
+  const runMutation = async <T extends unknown[], R>(
     mutationFn: (...args: T) => Promise<R>,
     args: T
   ) => {
+    pendingMutations.current += 1
     setIsSaving(true)
     try {
-      return await mutationFn(...args)
+      const result = await mutationFn(...args)
+      setMutationError(false)
+      return result
+    } catch (error) {
+      setMutationError(true)
+      notify(error instanceof Error ? error.message : 'Could not save changes. Please try again.')
     } finally {
-      setIsSaving(false)
+      pendingMutations.current -= 1
+      setIsSaving(pendingMutations.current > 0)
     }
   }
 
   const addCardAt = (kind: CardKind = 'knowledge', posX?: number, posY?: number) => {
     const id = uid()
     const cam = cameraRef.current
-    const targetX = posX !== undefined ? posX : (innerWidth / 2 - cam.x) / cam.zoom - CARD_W / 2 + (Math.random() - 0.5) * 80
-    const targetY = posY !== undefined ? posY : (innerHeight / 2 - cam.y) / cam.zoom - CARD_H / 2 + (Math.random() - 0.5) * 80
+    const rect = viewportRef.current!.getBoundingClientRect()
+    const position = freePosition((rect.width / 2 - cam.x) / cam.zoom - CARD_W / 2, (rect.height / 2 - cam.y) / cam.zoom - CARD_H / 2,
+      board.cards.filter(c => topicId === 'all' || c.topicId === topicId))
+    const targetX = posX ?? position.x
+    const targetY = posY ?? position.y
     const next: ClarityCard = {
       id,
       title: kind === 'question' ? 'A question worth exploring' : kind === 'meaning' ? 'What might this mean?' : 'Untitled thought',
@@ -346,8 +360,8 @@ function AppContent() {
       confidence: kind === 'meaning' ? 'hypothesis' : 'first-hand',
       status: 'open',
       topicId: topicId === 'all' ? 'story' : topicId,
-      x: targetX,
-      y: targetY,
+      x: snap(targetX),
+      y: snap(targetY),
       vx: 0,
       vy: 0,
       updatedAt: Date.now(),
@@ -370,8 +384,8 @@ function AppContent() {
       confidence: 'first-hand',
       status: 'open',
       topicId: 'story',
-      x: worldX - CARD_W / 2,
-      y: worldY - CARD_H / 2,
+      x: snap(worldX - CARD_W / 2),
+      y: snap(worldY - CARD_H / 2),
       vx: 0,
       vy: 0,
       updatedAt: Date.now(),
@@ -403,11 +417,12 @@ function AppContent() {
 
   const updateCard = (patch: Partial<ClarityCard>) => {
     if (!selectedId) return
-    runMutation(updateCardMutation, [{ id: selectedId, updates: { ...patch, updatedAt: Date.now() } }]);
+    edits.edit(selectedId, patch)
   }
 
   const deleteCard = () => {
     if (!selectedId) return
+    edits.discard(selectedId)
     runMutation(deleteCardMutation, [{ id: selectedId }])
     setSelectedId(null)
     notify('Card deleted')
@@ -514,17 +529,58 @@ function AppContent() {
     reader.readAsText(file)
   }
 
-  const onWheel = (event: React.WheelEvent) => {
-    event.preventDefault()
-    const scale = Math.exp(-event.deltaY * 0.001)
-    const zoom = Math.min(1.8, Math.max(0.06, camera.zoom * scale))
-    const rect = viewportRef.current!.getBoundingClientRect()
-    const px = event.clientX - rect.left
-    const py = event.clientY - rect.top
-    const wx = (px - camera.x) / camera.zoom
-    const wy = (py - camera.y) / camera.zoom
-    setCamera({ x: px - wx * zoom, y: py - wy * zoom, zoom })
-  }
+  useEffect(() => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      const cam = cameraRef.current
+      const zoom = Math.min(1.8, Math.max(0.06, cam.zoom * Math.exp(-event.deltaY * 0.001)))
+      const rect = viewport.getBoundingClientRect()
+      const px = event.clientX - rect.left, py = event.clientY - rect.top
+      setCamera({ x: px - (px - cam.x) / cam.zoom * zoom, y: py - (py - cam.y) / cam.zoom * zoom, zoom })
+    }
+    viewport.addEventListener('wheel', onWheel, { passive: false })
+    return () => viewport.removeEventListener('wheel', onWheel)
+  }, [data !== undefined])
+
+  const importImages = useCallback(async (files: File[]) => {
+    if (!files.length) return
+    setUploading(true)
+    try {
+      const rect = viewportRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const cam = cameraRef.current
+      const occupied: { x: number; y: number }[] = [...(dataRef.current?.cards ?? []).filter(c => topicId === 'all' || c.topicId === topicId)]
+      for (const [index, file] of files.entries()) {
+        if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif'].includes(file.type) || file.size > 10 * 1024 * 1024) {
+          throw new Error('Choose a PNG, JPEG, WebP, GIF or AVIF image up to 10 MB.')
+        }
+        const uploadUrl = await generateUploadUrl({})
+        const response = await fetch(uploadUrl, { method: 'POST', headers: { 'Content-Type': file.type }, body: file })
+        if (!response.ok) throw new Error('Image upload failed. Please try again.')
+        const { storageId } = await response.json() as { storageId: Id<'_storage'> }
+        const position = freePosition((rect.width / 2 - cam.x) / cam.zoom - CARD_W / 2 + index * GRID * 2,
+          (rect.height / 2 - cam.y) / cam.zoom - CARD_H / 2 + index * GRID * 2, occupied)
+        await addImageMutation({ id: uid(), storageId, title: file.name.replace(/\.[^.]+$/, '') || 'Pasted image', topicId: topicId === 'all' ? 'story' : topicId,
+          ...position })
+        occupied.push(position)
+      }
+      setToast(`${files.length} image${files.length === 1 ? '' : 's'} added`)
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : 'Image upload failed')
+    } finally { setUploading(false) }
+  }, [generateUploadUrl, addImageMutation, topicId])
+
+  useEffect(() => {
+    const onPaste = (event: ClipboardEvent) => {
+      if ((event.target as HTMLElement)?.closest('input, textarea, [contenteditable="true"], .modal')) return
+      const files = Array.from(event.clipboardData?.items ?? []).filter(item => item.type.startsWith('image/')).map(item => item.getAsFile()).filter((file): file is File => !!file)
+      if (files.length) { event.preventDefault(); void importImages(files) }
+    }
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+  }, [importImages])
 
   if (data === undefined) {
     return (
@@ -544,7 +600,7 @@ function AppContent() {
           <div className="brand-mark"><Sparkles size={17} /></div>
           <span>clarity</span>
           <span className="saved">
-            {isSaving ? (
+            {edits.error ? <button className="sync-retry" onClick={edits.flushAll}>Not saved · retry</button> : mutationError ? <span>Save failed · try again</span> : isSaving || edits.pending || uploading ? (
               <>
                 <Loader2 size={13} className="animate-spin" /> Saving...
               </>
@@ -566,6 +622,8 @@ function AppContent() {
           <kbd>⌘ K</kbd>
         </div>
         <div className="top-actions">
+          <input ref={imageInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" multiple hidden onChange={e => { void importImages(Array.from(e.target.files ?? [])); e.target.value = '' }}/>
+          <button className="ghost-button image-import" disabled={uploading} onClick={() => imageInputRef.current?.click()}><Upload size={16}/>{uploading ? 'Uploading…' : 'Add image'}</button>
           <button className="ghost-button" onClick={() => setBulkOpen(true)}>
             <Upload size={16} /> Quick capture
           </button>
@@ -585,30 +643,12 @@ function AppContent() {
 
       <aside className={`sidebar ${sidebarOpen ? 'mobile-open' : ''}`}>
         <p className="eyebrow">Your map</p>
-        <nav className="topics">
-          {board.topics.map((topic) => (
-            <button
-              key={topic.id}
-              className={topicId === topic.id ? 'topic active' : 'topic'}
-              onClick={() => setTopicId(topic.id)}
-              onContextMenu={(e) => {
-                e.preventDefault()
-                e.stopPropagation()
-                setEditingTopic(topic)
-              }}
-              title="Click to view space • Right-click to edit name & color"
-            >
-              <span className="topic-dot" style={{ background: topic.color }} />
-              <span>{topic.name}</span>
-              <span className="count">
-                {topic.id === 'all' ? board.cards.length : board.cards.filter((c) => c.topicId === topic.id).length}
-              </span>
-            </button>
-          ))}
-        </nav>
-        <button className="add-topic" onClick={() => setTopicsOpen(true)}>
-          <Plus size={15} /> Add a space
-        </button>
+        <Spaces topics={board.topics} folders={board.folders ?? []} active={topicId}
+          counts={Object.fromEntries(board.topics.map(t => [t.id, t.id === 'all' ? board.cards.length : board.cards.filter(c => c.topicId === t.id).length]))}
+          onSelect={setTopicId} onEdit={setEditingTopic} onAdd={() => setTopicsOpen(true)}
+          onArrange={(ids, folderId) => runMutation(arrangeSpacesMutation, [{ ids, folderId }])}
+          onSaveFolder={folder => runMutation(saveFolderMutation, [{ folder }])}
+          onDeleteFolder={id => runMutation(deleteFolderMutation, [{ id }])}/>
 
         <div className="clarity-card">
           <div className="clarity-heading">
@@ -631,7 +671,7 @@ function AppContent() {
       <section
         ref={viewportRef}
         className={linkStart ? 'canvas linking' : 'canvas'}
-        onWheel={onWheel}
+        style={{ backgroundSize: `${GRID * camera.zoom}px ${GRID * camera.zoom}px`, backgroundPosition: `${camera.x - GRID * camera.zoom / 2}px ${camera.y - GRID * camera.zoom / 2}px` }}
         onPointerDown={(event) => {
           setCanvasMenu(null)
           const target = event.target as HTMLElement
@@ -657,6 +697,7 @@ function AppContent() {
           const target = event.target as HTMLElement
           if (target.closest('.map-card, button, a, input, select, textarea, .modal, .inspector, .canvas-toolbar, .floating-thread')) return
           event.preventDefault()
+          if (linkStartRef.current || linkGesture.current) return
           const rect = viewportRef.current!.getBoundingClientRect()
           setCanvasMenu({
             clientX: event.clientX,
@@ -812,14 +853,30 @@ function AppContent() {
             return (
               <article
                 key={card.id}
-                className={`map-card ${isSelected ? 'selected' : ''} ${linkStart && linkStart !== card.id ? 'wire-target' : ''}`}
+                data-card-id={card.id}
+                tabIndex={0}
+                aria-label={card.title}
+                onKeyDown={event => { if (event.key === 'Enter') { setSelectedId(card.id); centerCardInView(card.id) } }}
+                className={`map-card ${card.color ? 'custom-color' : ''} ${card.imageStorageId ? 'image-card' : ''} ${dragPosition?.id === card.id ? 'dragging' : ''} ${isSelected ? 'selected' : ''} ${linkStart && linkStart !== card.id ? 'wire-target' : ''}`}
                 style={{
                   transform: `translate(${card.x}px, ${card.y}px)`,
                   width: CARD_W,
+                  backgroundColor: card.color || undefined,
+                  color: card.color ? contrastText(card.color) : undefined,
                 }}
+                onContextMenu={event => { event.preventDefault(); event.stopPropagation() }}
                 onPointerDown={(event) => {
                   if ((event.target as HTMLElement).closest('button, select, input, textarea, a')) return
                   event.stopPropagation()
+                  if (event.button === 2) {
+                    event.preventDefault()
+                    linkGesture.current = card.id
+                    setLinkStart(card.id)
+                    setMouseWorld({ x: card.x + CARD_W / 2, y: card.y + CARD_H / 2 })
+                    setCanvasMenu(null)
+                    return
+                  }
+                  if (event.button !== 0) return
                   if (linkStart) {
                     if (linkStart !== card.id) {
                       if (!board.connections.some((e) => (e.from === linkStart && e.to === card.id) || (e.from === card.id && e.to === linkStart))) {
@@ -845,12 +902,10 @@ function AppContent() {
                     id: card.id,
                     dx: worldX - card.x,
                     dy: worldY - card.y,
-                    lastX: event.clientX,
-                    lastY: event.clientY,
-                    time: performance.now(),
-                    vx: 0,
-                    vy: 0,
+                    x: card.x,
+                    y: card.y,
                   }
+                  event.currentTarget.setPointerCapture(event.pointerId)
                 }}
                 onClick={(e) => {
                   e.stopPropagation()
@@ -866,7 +921,10 @@ function AppContent() {
                   }
                 }}
               >
-                <div className="card-topline">
+                {card.imageStorageId ? <>
+                  {card.imageUrl ? <img className="map-image" src={card.imageUrl} alt={card.title} draggable={false}/> : <div className="image-missing">Image unavailable</div>}
+                  <h3 className="card-title image-name">{card.title}</h3>
+                </> : <><div className="card-topline">
                   <span className="card-kind-tag" style={{ color: meta.color }}>
                     <i>{meta.symbol}</i>
                     {meta.label}
@@ -885,9 +943,11 @@ function AppContent() {
                   <span className={`status-badge status-${card.status}`}>{card.status}</span>
                   {card.confidence === 'hypothesis' && <span className="hypo-indicator">Hypothesis</span>}
                 </div>
+                </>}
               </article>
             )
           })}
+          {dragPosition && <div className="snap-preview" style={{ width: CARD_W, height: CARD_H, transform: `translate(${snap(dragPosition.x)}px, ${snap(dragPosition.y)}px)` }}/>}
         </div>
       </section>
 
@@ -919,6 +979,7 @@ function AppContent() {
                 Add Meaning Card
               </button>
               <div className="menu-divider" />
+              <button onClick={() => { imageInputRef.current?.click(); setCanvasMenu(null) }}><Upload size={15}/>Add image</button>
               <button onClick={() => addThreadAt(canvasMenu.worldX, canvasMenu.worldY)}>
                 <FolderPlus size={15} /> Add Space Here
               </button>
@@ -929,11 +990,14 @@ function AppContent() {
 
       {selected && (
         <Inspector
+          key={selected.id}
           card={selected}
           topics={board.topics.filter((t) => t.id !== 'all')}
           connections={board.connections}
           cards={board.cards}
           onChange={updateCard}
+          onFlush={edits.flushAll}
+          saveStatus={edits.error ? 'Not saved — retry above' : edits.pending || isSaving ? 'Saving…' : 'Synced'}
           onClose={() => setSelectedId(null)}
           onDelete={deleteCard}
           onLink={startLink}
@@ -1007,6 +1071,8 @@ function Inspector({
   connections,
   cards,
   onChange,
+  onFlush,
+  saveStatus,
   onClose,
   onDelete,
   onLink,
@@ -1020,6 +1086,8 @@ function Inspector({
   connections: Connection[]
   cards: ClarityCard[]
   onChange: (patch: Partial<ClarityCard>) => void
+  onFlush: () => void
+  saveStatus: string
   onClose: () => void
   onDelete: () => void
   onLink: () => void
@@ -1036,11 +1104,11 @@ function Inspector({
   const meta = kindMeta[card.kind] ?? kindMeta.knowledge
 
   return (
-    <aside className="inspector">
+    <aside className="inspector" onBlur={onFlush}>
       <div className="inspector-header">
         <div className="inspector-badge">
           <i style={{ background: meta.color }}>{meta.symbol}</i>
-          <span>{meta.label}</span>
+          <span>{card.imageStorageId ? 'Image' : meta.label}</span>
         </div>
         <div className="inspector-header-actions">
           <button className="icon-button close-btn" onClick={onClose} title="Close inspector (Esc)" aria-label="Close inspector">
@@ -1062,7 +1130,7 @@ function Inspector({
           </div>
         )}
 
-        <div className="kind-switcher">
+        {!card.imageStorageId && <div className="kind-switcher">
           {(Object.keys(kindMeta) as CardKind[]).map((kind) => {
             const km = kindMeta[kind]
             return (
@@ -1076,10 +1144,12 @@ function Inspector({
               </button>
             )
           })}
-        </div>
+        </div>}
 
-        <label className="field-label">Title</label>
+        {card.imageUrl && <img className="inspector-image" src={card.imageUrl} alt={card.title}/>}
+        <label className="field-label" htmlFor="card-title">{card.imageStorageId ? 'Image name' : 'Title'}</label>
         <textarea
+          id="card-title"
           className="title-input"
           value={card.title}
           onChange={(e) => onChange({ title: e.target.value })}
@@ -1087,8 +1157,10 @@ function Inspector({
           rows={2}
         />
 
-        <label className="field-label">Thought & Context</label>
+        {!card.imageStorageId && <>
+        <label className="field-label" htmlFor="card-body">Thought & Context</label>
         <textarea
+          id="card-body"
           className="body-input"
           value={card.body}
           onChange={(e) => onChange({ body: e.target.value })}
@@ -1152,6 +1224,13 @@ function Inspector({
             <strong>Interpretation / Hypothesis:</strong> This is visibly marked as an interpretation rather than an established fact. It can be freely edited, tested, or rejected.
           </div>
         )}
+        <label className="field-label" htmlFor="card-color">Card color</label>
+        <div className="card-color-controls">
+          <input id="card-color" type="color" value={card.color || '#fffefa'} onChange={e => onChange({ color: e.target.value })}/>
+          <span>Text contrast adjusts automatically</span>
+          <button className="ghost-button" onClick={() => onChange({ color: '' })}>Reset</button>
+        </div>
+        </>}
 
         <div className="connections-list">
           <div className="connections-header">
@@ -1196,7 +1275,7 @@ function Inspector({
         <button className="delete-button" onClick={onDelete} title="Delete this card">
           <Trash2 size={16} /> Delete card
         </button>
-        <span className="save-status"><Check size={13} /> Synced</span>
+        <span className="save-status"><Check size={13} /> {saveStatus}</span>
       </div>
     </aside>
   )
@@ -1282,8 +1361,8 @@ function BulkCapture({ topics, onClose, onAdd }: { topics: Topic[]; onClose: () 
       confidence: kind === 'meaning' ? 'hypothesis' : 'first-hand',
       status: 'open',
       topicId,
-      x: (index % cols) * 310 - cols * 140,
-      y: Math.floor(index / cols) * 205 - 180,
+      x: snap((index % cols) * 308 - cols * 132),
+      y: snap(Math.floor(index / cols) * 198 - 176),
       vx: 0,
       vy: 0,
       updatedAt: Date.now(),

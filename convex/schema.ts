@@ -28,6 +28,8 @@ export default defineSchema({
       v.literal("rejected")
     ),
     updatedAt: v.number(),
+    color: v.optional(v.string()),
+    imageStorageId: v.optional(v.id("_storage")),
   }).index("idx_id", ["id"]),
 
   connections: defineTable({
@@ -42,5 +44,10 @@ export default defineSchema({
     color: v.string(),
     x: v.optional(v.number()),
     y: v.optional(v.number()),
+    order: v.optional(v.number()),
+    folderId: v.optional(v.string()),
   }).index("idx_id", ["id"]),
+  folders: defineTable({
+    id: v.string(), name: v.string(), color: v.string(), order: v.number(),
+  }).index("by_folder_id", ["id"]),
 });
